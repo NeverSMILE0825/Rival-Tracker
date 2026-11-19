@@ -18,7 +18,8 @@ import {
 import { refreshMarkets, startLiveMarkets } from "./market.js";
 import { autoScanTick, cachedScanRange, decorateScan, enqueueScan, getJob, refreshOne, stopScan, warmScanRange } from "./scanner.js";
 import { headBlock } from "./chain.js";
-import { ethToWei, normalizeAddress, parseApiKeys, zonedUnix } from "./util.js";
+import { sendTelegram } from "./telegram.js";
+import { ethToWei, normalizeAddress, nowSec, parseApiKeys, zonedUnix } from "./util.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -265,6 +266,31 @@ app.put("/api/settings", (req, res) => {
   }
   if (body.autoScan != null) next.autoScan = body.autoScan ? "1" : "0";
   if (body.requireFirstFunder != null) next.requireFirstFunder = body.requireFirstFunder ? "1" : "0";
+  if (body.telegramChatId != null) {
+    const chat = String(body.telegramChatId).trim();
+    if (chat && !/^-?\d{1,20}$/.test(chat)) {
+      return res.status(400).json({ error: "Chat id must be the number from your Telegram chat." });
+    }
+    next.telegramChatId = chat;
+  }
+  if (body.clearTelegramToken) next.telegramBotToken = "";
+  else if (typeof body.telegramBotToken === "string" && body.telegramBotToken.trim()) {
+    const token = body.telegramBotToken.trim();
+    if (!/^\d{6,}:[A-Za-z0-9_-]{20,}$/.test(token)) {
+      return res.status(400).json({ error: "That does not look like a bot token from @BotFather." });
+    }
+    next.telegramBotToken = token;
+  }
+  if (body.telegramAlerts != null) next.telegramAlerts = body.telegramAlerts ? "1" : "0";
+  if (next.telegramAlerts === "1") {
+    const current = getSettings();
+    const token = next.telegramBotToken ?? current.telegramBotToken;
+    const chat = next.telegramChatId ?? current.telegramChatId;
+    if (!token || !chat) {
+      return res.status(400).json({ error: "Add a bot token and a chat id before turning alerts on." });
+    }
+    if (current.telegramAlerts !== "1") next.telegramSince = String(nowSec());
+  }
   if (body.clearEtherscanKey) next.etherscanApiKey = "";
   else if (typeof body.etherscanApiKey === "string" && body.etherscanApiKey.trim()) {
     const keys = parseApiKeys(body.etherscanApiKey);
@@ -274,7 +300,31 @@ app.put("/api/settings", (req, res) => {
     if (keys.length > 100) return res.status(400).json({ error: "Save 100 keys or fewer." });
     next.etherscanApiKey = keys.join("\n");
   }
-  res.json(saveSettings(next));
+  const saved = saveSettings(next);
+  saved.telegramBotToken = "";
+  saved.etherscanApiKey = "";
+  res.json(saved);
+});
+
+app.post("/api/telegram/test", async (req, res) => {
+  const body = req.body || {};
+  const token = typeof body.telegramBotToken === "string" ? body.telegramBotToken.trim() : "";
+  const chatId = typeof body.telegramChatId === "string" ? body.telegramChatId.trim() : "";
+  if (token && !/^\d{6,}:[A-Za-z0-9_-]{20,}$/.test(token)) {
+    return res.status(400).json({ error: "That does not look like a bot token from @BotFather." });
+  }
+  if (chatId && !/^-?\d{1,20}$/.test(chatId)) {
+    return res.status(400).json({ error: "Chat id must be the number from your Telegram chat." });
+  }
+  try {
+    await sendTelegram("Rival Tracker is connected. New token launches will show up here.", {
+      token,
+      chatId,
+    });
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
 });
 
 app.use("/api", (_req, res) => {

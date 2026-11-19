@@ -143,6 +143,10 @@ const DEFAULTS = {
   timezoneOffset: "9",
   scanStartBlock: "",
   scanEndBlock: "",
+  telegramBotToken: "",
+  telegramChatId: "",
+  telegramAlerts: "0",
+  telegramSince: "",
 };
 
 const SEED = [
@@ -707,6 +711,8 @@ export function snapshot() {
       etherscanKeyCount: etherscanKeys.length,
       etherscanApiKeySet: etherscanKeys.length > 0,
       etherscanApiKeyHint: preview.length ? `${preview.join(", ")}${extra}` : "",
+      telegramBotToken: "",
+      telegramBotTokenSet: Boolean(settings.telegramBotToken),
     },
   };
 }

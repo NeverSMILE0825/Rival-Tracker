@@ -838,14 +838,24 @@ function viewSettings() {
               <input id="key-file" type="file" accept=".txt,text/plain,.csv" hidden />`
         }
       </div>
+      <div class="field wide">
+        <label>Telegram alerts</label>
+        <p class="keys-note">Leave Live on in the header so new transactions keep getting read. Alerts cover launches from the moment you turn this on. Older tokens already in the table stay quiet.</p>
+        <p class="keys-note">${settings.telegramBotTokenSet ? "Bot token saved. Paste a new one only if you want to replace it." : "No bot token saved yet."}</p>
+        <input name="telegramBotToken" type="password" autocomplete="off" spellcheck="false" placeholder="Bot token from @BotFather" />
+        <input name="telegramChatId" autocomplete="off" spellcheck="false" placeholder="Chat id" value="${esc(fieldValue("telegramChatId"))}" />
+      </div>
     </div>
+    <label class="check"><input type="checkbox" name="telegramAlerts" ${settings.telegramAlerts === "1" ? "checked" : ""}/> Send a Telegram message when a new token launches</label>
     <label class="check"><input type="checkbox" name="autoScan" ${settings.autoScan === "1" ? "checked" : ""}/> Keep scanning enabled rivals on a timer</label>
     <label class="check"><input type="checkbox" name="requireFirstFunder" ${settings.requireFirstFunder === "1" ? "checked" : ""}/> Only keep a wallet when this rival is its first real ETH source</label>
       <p class="muted">Sample launches are funded with well under 1 ETH, so the maximum keeps treasury-sized transfers out of the waiting list. A wallet stays on the list when this rival is the first wallet that sent it real ETH. ${state.data.counts.ignored} wallets are hidden by that rule.</p>
     <div class="err" id="settings-err"></div>
     <div class="actions">
       <button class="btn primary" type="submit">Save settings</button>
+      <button class="btn" type="button" data-act="telegram-test">Send test message</button>
       <button class="btn" type="button" data-act="clear-key">Remove Etherscan keys</button>
+      <button class="btn" type="button" data-act="clear-telegram">Remove Telegram token</button>
       <button class="btn" type="button" data-act="recheck">Re-check hidden wallets</button>
     </div>
   </form>`;
@@ -1052,6 +1062,7 @@ async function saveSettings(form) {
   const data = Object.fromEntries(new FormData(form).entries());
   data.autoScan = form.autoScan.checked;
   data.requireFirstFunder = form.requireFirstFunder.checked;
+  data.telegramAlerts = form.telegramAlerts.checked;
   const settings = state.data.settings;
   data.scanRangeMode = rangeMode();
   if (!data.scanEndDate) data.scanEndDate = settings.scanEndDate;
@@ -1293,6 +1304,29 @@ async function onClick(event) {
   }
   if (act === "read") {
     await api("/api/events/read", { method: "POST", body: {} });
+    await load({ fresh: true });
+    return;
+  }
+  if (act === "telegram-test") {
+    const form = document.getElementById("settings");
+    const data = form ? Object.fromEntries(new FormData(form).entries()) : {};
+    try {
+      await api("/api/telegram/test", {
+        method: "POST",
+        body: {
+          telegramBotToken: data.telegramBotToken || "",
+          telegramChatId: data.telegramChatId || "",
+        },
+      });
+      toast("Test message sent");
+    } catch (error) {
+      toast(error.message);
+    }
+    return;
+  }
+  if (act === "clear-telegram") {
+    await api("/api/settings", { method: "PUT", body: { clearTelegramToken: true, telegramAlerts: false } });
+    toast("Telegram token removed");
     await load({ fresh: true });
     return;
   }

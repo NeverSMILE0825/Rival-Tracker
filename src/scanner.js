@@ -38,6 +38,7 @@ import {
   readTokenMeta,
 } from "./chain.js";
 import { refreshMarkets } from "./market.js";
+import { notifyLaunch } from "./telegram.js";
 import { ethToWei, formatEth, formatKst, normalizeAddress, sleep, timezoneLabel, zonedUnix } from "./util.js";
 
 const HISTORY_OFFSET = 1000;
@@ -853,6 +854,14 @@ async function saveMints(competitor, tx, receipt) {
         address: token.address,
         message: `${token.meta.symbol} launched by ${competitor.label} · ${zonedStamp(Number(tx.timeStamp))}`,
       });
+      notifyLaunch({
+        symbol: token.meta.symbol,
+        name: token.meta.name,
+        address: token.address,
+        deployer: competitor.address,
+        rival: competitor.label,
+        launchedAt: Number(tx.timeStamp),
+      });
       created.push(token.address);
     }
   }
@@ -1017,6 +1026,14 @@ async function inspectDeployer(address, settings) {
             competitorId: rival.competitor_id,
             address: token.address,
             message: `${token.meta.symbol} launched · ${rival.label} · ${zonedStamp(Number(tx.timeStamp))}`,
+          });
+          notifyLaunch({
+            symbol: token.meta.symbol,
+            name: token.meta.name,
+            address: token.address,
+            deployer: address,
+            rival: rival.label,
+            launchedAt: Number(tx.timeStamp),
           });
           found.push(token.address);
         }
