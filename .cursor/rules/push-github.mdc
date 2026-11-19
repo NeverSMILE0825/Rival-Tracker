@@ -1,0 +1,12 @@
+---
+description: Push codebase updates to the Rival-Tracker GitHub repo
+alwaysApply: true
+---
+
+# Push updates to GitHub
+
+After changing this codebase, commit the update and push it to `https://github.com/NeverSMILE0825/Rival-Tracker.git` on `main`.
+
+Keep these out of every commit: `data/`, `node_modules/`, `.env`, and `Etherscan APIs.txt`. Never commit API keys or the SQLite database.
+
+Do not change git config. Do not force-push.
