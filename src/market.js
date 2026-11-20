@@ -88,6 +88,57 @@ async function fetchTransferCount(address) {
   return null;
 }
 
+function bestPair(pairs) {
+  const records = pairs.filter((pair) => pair.pairAddress);
+  records.sort((a, b) => {
+    const liquidity = Number(b.liquidity?.usd || 0) - Number(a.liquidity?.usd || 0);
+    if (liquidity) return liquidity;
+    const score = (pair) => ((pair.labels || []).some((label) => /^v4/i.test(String(label))) ? 1 : 0);
+    return score(b) - score(a);
+  });
+  return records[0] || null;
+}
+
+async function dextoolsLogo(token) {
+  const url = `https://www.dextools.io/resources/tokens/logos/ether/${token}.png`;
+  try {
+    const response = await fetch(url, { signal: AbortSignal.timeout(8000) });
+    const type = response.headers.get("content-type") || "";
+    if (response.ok && type.startsWith("image/")) return url;
+  } catch {
+    return "";
+  }
+  return "";
+}
+
+export async function lookupLaunchMarket(address) {
+  const token = String(address || "").toLowerCase();
+  let pairs = [];
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    try {
+      pairs = await fetchTokenPairs(token);
+      if (pairs.length) break;
+    } catch (error) {
+      console.error("launch pair lookup", error.message);
+    }
+    if (attempt === 1 && !pairs.length) await sleep(1000);
+  }
+  const best = bestPair(pairs);
+  const saved = best?.pairAddress ? null : getToken(token);
+  const pairAddress = best?.pairAddress || saved?.pair_address || "";
+  const imageUrl =
+    pairs.map((pair) => pair.info?.imageUrl).find((url) => typeof url === "string" && url.startsWith("https://")) ||
+    (await dextoolsLogo(token));
+  return {
+    pairAddress,
+    dextoolsUrl: pairAddress
+      ? `https://www.dextools.io/app/ether/pair-explorer/${pairAddress}`
+      : `https://www.dextools.io/app/ether/token/${token}`,
+    dexscreenerUrl: `https://dexscreener.com/ethereum/${token}`,
+    imageUrl: imageUrl || "",
+  };
+}
+
 async function fetchPairs(addresses) {
   const all = [];
   for (const address of addresses) {

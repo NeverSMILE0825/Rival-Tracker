@@ -480,6 +480,15 @@ function viewTokens() {
     )}`;
 }
 
+function dextoolsHref(token) {
+  const pair = String(token.pairAddress || token.pair_address || "");
+  if (/^0x[a-fA-F0-9]{40,}$/.test(pair)) return `https://www.dextools.io/app/ether/pair-explorer/${pair}`;
+  const stored = token.dextools_url || "";
+  if (stored.includes("/pair-explorer/")) return stored;
+  if (token.address) return `https://www.dextools.io/app/ether/token/${token.address}`;
+  return stored || "#";
+}
+
 function tokenRow(token) {
   const exchange = token.label ? `<span class="exch">${esc(token.label)}</span>` : "";
   return `<tr class="clickable" data-act="drawer-token" data-address="${esc(token.address)}">
@@ -493,7 +502,7 @@ function tokenRow(token) {
     <td>${esc(formatCount(token.txTotal))}</td>
     <td>${esc(formatCount(token.tx24h))}</td>
     <td class="links">
-      <a href="${esc(token.dextools_url || `https://www.dextools.io/app/ether/token/${token.address}`)}" target="_blank" rel="noreferrer">Dextools</a>
+      <a href="${esc(dextoolsHref(token))}" target="_blank" rel="noreferrer">Dextools</a>
       <a href="${esc(token.dexscreener_url || `https://dexscreener.com/ethereum/${token.address}`)}" target="_blank" rel="noreferrer">Dex</a>
     </td>
   </tr>`;
@@ -534,7 +543,11 @@ function displayTokenRows() {
         tx24h: numberOrNull(pair.txns_24h),
         txTotal: numberOrNull(token.txns_total),
         pairAddress: pair.pair_address || token.pair_address || "",
-        dextools_url: pair.dextools_url || token.dextools_url,
+        dextools_url: dextoolsHref({
+          address: token.address,
+          pair_address: pair.pair_address || token.pair_address,
+          dextools_url: pair.dextools_url || token.dextools_url,
+        }),
         dexscreener_url: pair.dexscreener_url || token.dexscreener_url,
       });
     }
@@ -955,7 +968,7 @@ function paintDrawer() {
         <span>Token</span><div class="addr">${esc(token.address)}</div>
       </div>
       <div class="links">
-        <a href="${esc(token.dextools_url || "#")}" target="_blank" rel="noreferrer">Dextools</a>
+        <a href="${esc(dextoolsHref(token))}" target="_blank" rel="noreferrer">Dextools</a>
         <a href="${esc(token.dexscreener_url || "#")}" target="_blank" rel="noreferrer">Dexscreener</a>
         <a href="https://etherscan.io/token/${esc(token.address)}" target="_blank" rel="noreferrer">Etherscan</a>
         <button class="btn" data-act="copy" data-value="${esc(token.address)}">Copy token</button>
