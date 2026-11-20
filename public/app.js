@@ -520,9 +520,14 @@ function exchangeTitle(dex, label) {
   return name || version || String(label || "");
 }
 
+function bannerIsIcon(url) {
+  return /\/tokens\/ethereum\/0x[a-f0-9]{40}\.png/i.test(String(url || ""));
+}
+
 function tokenThumb(token) {
   if (!token.banner) return "";
-  return `<img class="token-thumb" src="${esc(token.banner)}" alt="" onerror="this.remove()" />`;
+  const icon = bannerIsIcon(token.banner) ? " is-icon" : "";
+  return `<img class="token-thumb${icon}" src="${esc(token.banner)}" alt="" onerror="this.remove()" />`;
 }
 
 function tokenBanner(token) {
@@ -537,7 +542,7 @@ function tokenBanner(token) {
       <span class="token-banner-stats">${age ? `<span class="banner-age">${esc(age)}</span>` : ""}${rank ? `<span class="banner-rank">${esc(rank)}</span>` : ""}</span>
     </div>
     <div class="token-banner-pills"><span>Ethereum</span>${exchange ? `<span>${esc(exchange)}</span>` : ""}</div>
-    <img src="${esc(token.banner)}" alt="" onerror="this.closest('.token-banner').remove()" />
+    <img class="${bannerIsIcon(token.banner) ? "is-icon" : ""}" src="${esc(token.banner)}" alt="" onerror="this.closest('.token-banner').remove()" />
   </div>`;
 }
 

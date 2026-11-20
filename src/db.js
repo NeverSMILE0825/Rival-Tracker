@@ -499,6 +499,17 @@ export function listTokenAddresses(whereSql = "", params = []) {
   return db.prepare(`SELECT address FROM tokens ${whereSql}`).all(...params).map((row) => row.address);
 }
 
+export function listPaidBannerTargets() {
+  return db
+    .prepare(
+      `SELECT t.address, IFNULL(t.banner_url, '') AS banner_url
+       FROM tokens t
+       JOIN token_paid p ON p.token_address = t.address
+       GROUP BY t.address`,
+    )
+    .all();
+}
+
 export function updateTokenMarket(address, fields) {
   const current = db.prepare("SELECT peak_liquidity_usd FROM tokens WHERE address = ?").get(address);
   if (!current) return;

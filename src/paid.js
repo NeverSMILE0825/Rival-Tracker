@@ -1,10 +1,12 @@
 import {
   getSettings,
+  listPaidBannerTargets,
   listTokenAddresses,
   listUnalertedPaid,
   markPaidAlerted,
   savePaid,
   saveSettings,
+  setTokenBanner,
 } from "./db.js";
 import { notifyPaid } from "./telegram.js";
 import { nowSec, sleep } from "./util.js";
@@ -12,11 +14,15 @@ import { nowSec, sleep } from "./util.js";
 const ORDER_GAP_MS = 1100;
 const RACE_GAP_MS = 60_000;
 const SOCIAL_GAP_MS = 60_000;
+const BANNER_GAP_MS = 60_000;
+const BANNER_RETRY_MS = 30 * 60_000;
 const NOVEMBER_START = Math.floor(Date.parse("2026-11-01T00:00:00+09:00") / 1000);
 const priority = [];
 let cursor = 0;
 let lastRace = 0;
 let lastSocial = 0;
+let lastBanner = 0;
+const bannerMiss = new Map();
 let started = false;
 let chain = Promise.resolve();
 
@@ -190,6 +196,64 @@ async function syncRace(baseline) {
   }
 }
 
+function bannerChoices(address) {
+  const token = String(address || "").toLowerCase();
+  return [
+    `https://dd.dexscreener.com/ds-data/tokens/ethereum/${token}/header.png?size=xl`,
+    `https://www.dextools.io/resources/tokens/banners/ether/${token}.jpg`,
+    `https://dd.dexscreener.com/ds-data/tokens/ethereum/${token}.png?size=lg`,
+  ];
+}
+
+async function imageExists(url) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 8000);
+  try {
+    const response = await fetch(url, {
+      headers: { accept: "image/*", range: "bytes=0-32" },
+      signal: controller.signal,
+    });
+    const type = response.headers.get("content-type") || "";
+    const ok = (response.ok || response.status === 206) && type.startsWith("image/");
+    controller.abort();
+    return ok;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function hasDexscreenerBanner(url) {
+  const banner = String(url || "");
+  return banner.includes("cdn.dexscreener.com") || banner.includes("/header.png");
+}
+
+async function syncBanners() {
+  const targets = listPaidBannerTargets();
+  for (const target of targets) {
+    const current = target.banner_url || "";
+    if (hasDexscreenerBanner(current)) continue;
+    const tried = bannerMiss.get(target.address) || 0;
+    if (Date.now() - tried < BANNER_RETRY_MS) continue;
+    const choices = current ? [bannerChoices(target.address)[0]] : bannerChoices(target.address);
+    let saved = "";
+    for (const url of choices) {
+      const probe = url.includes("header.png?size=xl") ? url.replace("size=xl", "size=sm") : url;
+      if (await imageExists(probe)) {
+        saved = url;
+        break;
+      }
+    }
+    if (saved && saved !== current) {
+      setTokenBanner(target.address, saved);
+      bannerMiss.delete(target.address);
+    } else if (!saved) {
+      bannerMiss.set(target.address, Date.now());
+    }
+  }
+}
+
 async function syncSocials(baseline) {
   const known = new Set(listTokenAddresses());
   if (!known.size) return;
@@ -256,6 +320,10 @@ async function loop() {
       if (Date.now() - lastSocial > SOCIAL_GAP_MS) {
         await syncSocials(baseline);
         lastSocial = Date.now();
+      }
+      if (Date.now() - lastBanner > BANNER_GAP_MS) {
+        await syncBanners();
+        lastBanner = Date.now();
       }
       const address = nextAddress();
       if (address) {

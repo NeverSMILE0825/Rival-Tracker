@@ -158,6 +158,7 @@ td.token-cell { white-space: nowrap; }
 .token-line { display: inline-flex; align-items: center; gap: 8px; }
 .token-name { display: inline-flex; align-items: center; }
 .token-thumb { width: 72px; height: 24px; object-fit: cover; border-radius: 4px; flex: none; display: block; }
+.token-thumb.is-icon { width: 24px; height: 24px; border-radius: 6px; }
 .token-banner { width: 100%; margin: 14px 0 8px; border-radius: 12px; overflow: hidden; background: #0e131b; border: 1px solid rgba(255,255,255,0.08); }
 .token-banner-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 10px 2px; }
 .token-banner-name { display: inline-flex; align-items: center; gap: 6px; font-weight: 750; font-size: 13px; }
@@ -168,6 +169,7 @@ td.token-cell { white-space: nowrap; }
 .token-banner-pills { display: flex; gap: 6px; padding: 4px 10px 8px; }
 .token-banner-pills span { background: #1b2330; color: #d7deea; border-radius: 999px; padding: 2px 8px; font-size: 11px; font-weight: 650; }
 .token-banner img { display: block; width: 100%; aspect-ratio: 3 / 1; object-fit: cover; }
+.token-banner img.is-icon { width: 96px; height: 96px; aspect-ratio: 1; margin: 8px 10px 12px; border-radius: 12px; }
 td.paid-cell { white-space: normal; min-width: 220px; }
 .paid-list { display: flex; flex-direction: column; gap: 6px; }
 .paid-list.compact { flex-direction: row; flex-wrap: nowrap; align-items: center; gap: 14px; }
