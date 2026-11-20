@@ -15,6 +15,7 @@ const state = {
   pageSize: 50,
   pages: { waiting: 1, tokens: 1 },
   mainV4: true,
+  paidOnly: false,
   sort: { tokens: { key: "launched", dir: "desc" } },
 };
 
@@ -316,6 +317,7 @@ function paintView() {
     state.pageSize,
     state.pages[state.route] || 1,
     state.mainV4 ? "main" : "allpairs",
+    state.paidOnly ? "paid" : "any",
     state.sort[state.route]?.key || "",
     state.sort[state.route]?.dir || "",
   ].join("|");
@@ -458,6 +460,7 @@ function viewTokens() {
       </div>
       <select class="search" data-act="rival" style="width:180px">${rivalOptions()}</select>
       <input class="search" data-act="query" placeholder="Search name, symbol, address" value="${esc(state.query)}" />
+      <label class="check"><input type="checkbox" data-act="paid-only" ${state.paidOnly ? "checked" : ""}/> Paid tokens</label>
       <label class="check table-check"><input type="checkbox" data-act="main-v4" ${state.mainV4 ? "checked" : ""}/> Show main pair in V4</label>
     </div>
     ${dataTable(
@@ -778,6 +781,7 @@ function filteredTokens() {
   const query = state.query.trim().toLowerCase();
   return state.data.tokens
     .filter((token) => state.tokenStatus === "all" || token.status === state.tokenStatus)
+    .filter((token) => !state.paidOnly || (token.payments && token.payments.length))
     .filter((token) => state.rival === "all" || token.fundings.some((funding) => String(funding.competitor_id) === String(state.rival)))
     .filter((token) => {
       if (!query) return true;
@@ -1100,6 +1104,12 @@ function onInput(event) {
     state.rival = event.target.value;
     resetPage();
     paintView();
+  }
+  if (event.target.dataset.act === "paid-only") {
+    state.paidOnly = event.target.checked;
+    resetPage();
+    paintView();
+    return;
   }
   if (event.target.dataset.act === "main-v4") {
     state.mainV4 = event.target.checked;
