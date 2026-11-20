@@ -17,7 +17,7 @@ import {
 } from "./db.js";
 import { refreshMarkets, startLiveMarkets } from "./market.js";
 import { startPaidWatch } from "./paid.js";
-import { autoScanTick, cachedScanRange, decorateScan, enqueueScan, getJob, refreshOne, stopScan, warmScanRange } from "./scanner.js";
+import { autoScanTick, cachedScanRange, decorateScan, enqueueScan, getJob, refreshOne, startLiveTail, stopScan, warmScanRange } from "./scanner.js";
 import { headBlock } from "./chain.js";
 import { sendTelegram } from "./telegram.js";
 import { ethToWei, normalizeAddress, nowSec, parseApiKeys, zonedUnix } from "./util.js";
@@ -139,6 +139,7 @@ app.post("/api/live", (req, res) => {
     if (!ids.length) return res.status(400).json({ error: "Add an enabled rival before turning Live on." });
     enqueueScan(ids, { fromStart: false });
     startLiveMarkets();
+    startLiveTail();
   } else {
     stopScan();
   }
@@ -343,6 +344,7 @@ app.listen(port, "127.0.0.1", () => {
       .map((competitor) => competitor.id);
     if (ids.length) enqueueScan(ids, { fromStart: false });
     startLiveMarkets();
+    startLiveTail();
   }
 });
 

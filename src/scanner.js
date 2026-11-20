@@ -8,6 +8,7 @@ import {
   hasEvent,
   listCompetitors,
   listFundingsForDeployer,
+  listHotDeployers,
   markDeployer,
   queuedDeployers,
   pruneLargeFundings,
@@ -30,6 +31,7 @@ import {
   getReceipt,
   headBlock,
   internalTransfers,
+  transactionCounts,
   internalTxs,
   isDeploymentTx,
   mintedTokens,
@@ -40,7 +42,7 @@ import {
 import { refreshMarkets } from "./market.js";
 import { watchPaid } from "./paid.js";
 import { notifyLaunch } from "./telegram.js";
-import { ethToWei, formatEth, formatKst, normalizeAddress, sleep, timezoneLabel, zonedUnix } from "./util.js";
+import { ethToWei, formatEth, formatKst, normalizeAddress, nowSec, sleep, timezoneLabel, zonedUnix } from "./util.js";
 
 const HISTORY_OFFSET = 1000;
 const HISTORY_WINDOW_PAGES = 10;
@@ -1166,6 +1168,132 @@ export async function refreshOne(address) {
   const tokens = await inspectDeployer(address, settings);
   if (tokens.length) await refreshMarkets(tokens);
   return tokens;
+}
+
+const LIVE_TAIL_MS = 8_000;
+const liveFrom = new Map();
+const liveNonces = new Map();
+const liveInFlight = new Set();
+const seenLiveTx = new Set();
+let liveTailStarted = false;
+let hotCursor = 0;
+
+async function pageWindow(loadPage) {
+  const rows = [];
+  for (let page = 1; page <= 3; page += 1) {
+    const batch = await loadPage(page);
+    rows.push(...batch);
+    if (batch.length < 100) break;
+  }
+  return rows;
+}
+
+async function inspectFresh(address, settings) {
+  if (liveInFlight.has(address)) return;
+  liveInFlight.add(address);
+  try {
+    const tokens = await inspectDeployer(address, settings);
+    if (tokens.length) await refreshMarkets(tokens);
+  } catch (error) {
+    console.error("live wallet", address, error.message);
+  } finally {
+    liveInFlight.delete(address);
+  }
+}
+
+async function watchHotWallets(settings) {
+  const rows = listHotDeployers(24 * 3600, 400);
+  if (!rows.length) return;
+  const slice = [];
+  for (let index = 0; index < Math.min(50, rows.length); index += 1) {
+    slice.push(rows[(hotCursor + index) % rows.length]);
+  }
+  hotCursor = (hotCursor + slice.length) % rows.length;
+  let counts;
+  try {
+    counts = await transactionCounts(slice.map((row) => row.address));
+  } catch (error) {
+    console.error("live nonce", error.message);
+    return;
+  }
+  for (const row of slice) {
+    const address = row.address.toLowerCase();
+    const nonce = counts.get(address);
+    if (nonce == null) continue;
+    const previous = liveNonces.get(address);
+    liveNonces.set(address, nonce);
+    const known = Number(row.tx_count) || 0;
+    if (previous == null) {
+      if (known > 0 && nonce > known) await inspectFresh(address, settings);
+      continue;
+    }
+    if (nonce === previous) continue;
+    await inspectFresh(address, settings);
+  }
+}
+
+async function liveTailOnce() {
+  const settings = getSettings();
+  if (settings.live !== "1") return;
+  const head = await headBlock();
+  const minWei = ethToWei(settings.minFundingEth || "0.01");
+  const maxWei = ethToWei(settings.maxFundingEth || "20");
+  const rivals = listCompetitors().filter((competitor) => competitor.enabled);
+  for (const rival of rivals) {
+    if (getSettings().live !== "1") return;
+    const from = liveFrom.get(rival.id) ?? Math.max(1, head - 20);
+    if (from > head) continue;
+    try {
+      const normal = await pageWindow((page) => normalTxs(rival.address, from, page, 100, head));
+      for (const tx of normal) {
+        if (!tx.hash || seenLiveTx.has(tx.hash)) continue;
+        seenLiveTx.add(tx.hash);
+        try {
+          await handleCompetitorTx(rival, tx, minWei, maxWei);
+        } catch (error) {
+          console.error("live tx", error.message);
+        }
+      }
+      const internal = await pageWindow((page) => internalTxs(rival.address, from, page, 100, head));
+      for (const tx of internal) {
+        const key = `i:${tx.hash}:${tx.to}`;
+        if (seenLiveTx.has(key)) continue;
+        seenLiveTx.add(key);
+        recordOutgoingInternal(rival, tx, minWei, maxWei);
+      }
+      if (seenLiveTx.size > 8000) {
+        for (const key of seenLiveTx) {
+          seenLiveTx.delete(key);
+          if (seenLiveTx.size <= 4000) break;
+        }
+      }
+      liveFrom.set(rival.id, Math.max(1, head - 2));
+    } catch (error) {
+      console.error("live tip", rival.label, error.message);
+      continue;
+    }
+    const fresh = queuedDeployers(rival.id, 20).filter((deployer) => Number(deployer.first_funded_at) > nowSec() - 20 * 60);
+    for (const deployer of fresh) await inspectFresh(deployer.address, settings);
+  }
+  await watchHotWallets(settings);
+}
+
+export function startLiveTail() {
+  if (liveTailStarted) return;
+  liveTailStarted = true;
+  const loop = async () => {
+    console.log("Live launch watch is checking the chain tip every 8 seconds");
+    while (getSettings().live === "1") {
+      try {
+        await liveTailOnce();
+      } catch (error) {
+        console.error("live tail", error.message);
+      }
+      await sleep(LIVE_TAIL_MS);
+    }
+    liveTailStarted = false;
+  };
+  loop();
 }
 
 export function autoScanTick() {

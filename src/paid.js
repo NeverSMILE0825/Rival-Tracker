@@ -12,38 +12,34 @@ import { notifyPaid } from "./telegram.js";
 import { nowSec, sleep } from "./util.js";
 
 const ORDER_GAP_MS = 1100;
-const RACE_GAP_MS = 60_000;
-const SOCIAL_GAP_MS = 60_000;
+const FEED_GAP_MS = 8_000;
+const SOCIAL_GAP_MS = 10 * 60_000;
 const BANNER_GAP_MS = 60_000;
 const BANNER_RETRY_MS = 30 * 60_000;
+const RECENT_WINDOW_SEC = 24 * 3600;
 const NOVEMBER_START = Math.floor(Date.parse("2026-11-01T00:00:00+09:00") / 1000);
 const priority = [];
-let cursor = 0;
-let lastRace = 0;
+let recentCursor = 0;
+let olderCursor = 0;
+let recentTurns = 0;
+let recentCache = { at: 0, rows: [] };
+let olderCache = { at: 0, rows: [] };
 let lastSocial = 0;
 let lastBanner = 0;
 const bannerMiss = new Map();
 let started = false;
-let chain = Promise.resolve();
-
-function enqueue(task) {
-  const run = chain.then(task, task);
-  chain = run.then(
-    () => {},
-    () => {},
-  );
-  return run;
-}
 
 export function watchPaid(address) {
   const token = String(address || "").toLowerCase();
-  if (/^0x[a-f0-9]{40}$/.test(token)) priority.push(token);
+  if (!/^0x[a-f0-9]{40}$/.test(token)) return;
+  if (!priority.includes(token)) priority.unshift(token);
 }
 
 export function startPaidWatch() {
   if (started) return;
   started = true;
-  enqueue(() => loop());
+  alertLoop();
+  maintenanceLoop();
 }
 
 function ensureBaseline() {
@@ -55,12 +51,39 @@ function ensureBaseline() {
   return now;
 }
 
-function nextAddress() {
+function cachedAddresses(cache, whereSql, params) {
+  if (Date.now() - cache.at < 20_000 && cache.rows.length) return cache.rows;
+  cache.rows = listTokenAddresses(whereSql, params);
+  cache.at = Date.now();
+  return cache.rows;
+}
+
+function nextAlertAddress() {
   if (priority.length) return priority.shift();
-  const addresses = listTokenAddresses("ORDER BY COALESCE(created_at, 0) DESC");
-  if (!addresses.length) return "";
-  const address = addresses[cursor % addresses.length];
-  cursor += 1;
+  const now = nowSec();
+  const recent = cachedAddresses(
+    recentCache,
+    "WHERE created_at > ? ORDER BY created_at DESC",
+    [now - RECENT_WINDOW_SEC],
+  );
+  if (recent.length && recentTurns < 4) {
+    recentTurns += 1;
+    const address = recent[recentCursor % recent.length];
+    recentCursor += 1;
+    return address;
+  }
+  recentTurns = 0;
+  const older = cachedAddresses(
+    olderCache,
+    "WHERE created_at IS NULL OR created_at <= ? ORDER BY COALESCE(created_at, 0) DESC",
+    [now - RECENT_WINDOW_SEC],
+  );
+  const rows = older.length ? older : recent;
+  if (!rows.length) return "";
+  const cursor = older.length ? olderCursor : recentCursor;
+  const address = rows[cursor % rows.length];
+  if (older.length) olderCursor += 1;
+  else recentCursor += 1;
   return address;
 }
 
@@ -254,45 +277,86 @@ async function syncBanners() {
   }
 }
 
-async function syncSocials(baseline) {
+const DEX_FEEDS = [
+  "https://api.dexscreener.com/token-profiles/latest/v1",
+  "https://api.dexscreener.com/community-takeovers/latest/v1",
+  "https://api.dexscreener.com/ads/latest/v1",
+  "https://api.dexscreener.com/token-boosts/latest/v1",
+];
+
+async function syncFastFeeds(baseline) {
   const known = new Set(listTokenAddresses());
   if (!known.size) return;
+  const hits = new Set();
+  await Promise.all(
+    DEX_FEEDS.map(async (url) => {
+      try {
+        const response = await fetch(url, { signal: AbortSignal.timeout(10000) });
+        if (!response.ok) return;
+        const payload = await response.json().catch(() => []);
+        const rows = Array.isArray(payload) ? payload : [];
+        for (const row of rows) {
+          if (String(row.chainId || "") !== "ethereum") continue;
+          const address = String(row.tokenAddress || "").toLowerCase();
+          if (known.has(address)) hits.add(address);
+        }
+      } catch (error) {
+        console.error("paid feed", error.message);
+      }
+    }),
+  );
+  for (const address of hits) {
+    await syncOrders(address, baseline);
+    await flushAlerts();
+  }
+  await syncRace(baseline);
+  await syncSocialPage(baseline, 0);
+  await flushAlerts();
+}
+
+async function syncSocialPage(baseline, page) {
+  const known = new Set(listTokenAddresses());
+  if (!known.size) return false;
+  let response;
+  try {
+    response = await fetch(
+      `https://www.dextools.io/api/core/token/listings/social-network-updates/list?limit=50&chain=ether&page=${page}`,
+      {
+        headers: { accept: "application/json", "X-API-Version": "1" },
+        signal: AbortSignal.timeout(12000),
+      },
+    );
+  } catch (error) {
+    console.error("paid dextools info", error.message);
+    return false;
+  }
+  if (!response.ok) return false;
+  const payload = await response.json().catch(() => ({}));
+  const rows = payload.data?.result || [];
+  let oldest = Number.POSITIVE_INFINITY;
+  for (const row of rows) {
+    const address = String(row.id || "").toLowerCase();
+    const paidAt = unixTime(Date.parse(row.updatedAt || ""));
+    if (paidAt) oldest = Math.min(oldest, paidAt);
+    if (!known.has(address) || !paidAt) continue;
+    savePaid({
+      fingerprint: `dextools|info|${address}|${paidAt}`,
+      tokenAddress: address,
+      source: "dextools",
+      kind: "info",
+      amount: null,
+      paidAt,
+      detail: "Token info update",
+      baseline,
+    });
+  }
+  return oldest >= NOVEMBER_START && rows.length > 0;
+}
+
+async function syncSocials(baseline) {
   for (let page = 0; page < 8; page += 1) {
-    let response;
-    try {
-      response = await fetch(
-        `https://www.dextools.io/api/core/token/listings/social-network-updates/list?limit=50&chain=ether&page=${page}`,
-        {
-          headers: { accept: "application/json", "X-API-Version": "1" },
-          signal: AbortSignal.timeout(20000),
-        },
-      );
-    } catch (error) {
-      console.error("paid dextools info", error.message);
-      return;
-    }
-    if (!response.ok) return;
-    const payload = await response.json().catch(() => ({}));
-    const rows = payload.data?.result || [];
-    if (!rows.length) break;
-    let oldest = Number.POSITIVE_INFINITY;
-    for (const row of rows) {
-      const address = String(row.id || "").toLowerCase();
-      const paidAt = unixTime(Date.parse(row.updatedAt || ""));
-      if (paidAt) oldest = Math.min(oldest, paidAt);
-      if (!known.has(address) || !paidAt) continue;
-      savePaid({
-        fingerprint: `dextools|info|${address}|${paidAt}`,
-        tokenAddress: address,
-        source: "dextools",
-        kind: "info",
-        amount: null,
-        paidAt,
-        detail: "Token info update",
-        baseline,
-      });
-    }
-    if (oldest < NOVEMBER_START) break;
+    const more = await syncSocialPage(baseline, page);
+    if (!more) break;
   }
 }
 
@@ -308,15 +372,32 @@ async function flushAlerts() {
   }
 }
 
-async function loop() {
+async function alertLoop() {
+  const baseline = ensureBaseline();
+  let lastFeed = 0;
+  console.log("Paid alerts are checking Dexscreener and Dextools every 8 seconds");
+  while (true) {
+    const started = Date.now();
+    try {
+      if (started - lastFeed >= FEED_GAP_MS) {
+        await syncFastFeeds(baseline);
+        lastFeed = Date.now();
+      }
+      const address = nextAlertAddress();
+      if (address) await syncOrders(address, baseline);
+      await flushAlerts();
+    } catch (error) {
+      console.error("paid watch", error.message);
+    }
+    const spent = Date.now() - started;
+    await sleep(Math.max(50, ORDER_GAP_MS - spent));
+  }
+}
+
+async function maintenanceLoop() {
   const baseline = ensureBaseline();
   while (true) {
-    let paused = ORDER_GAP_MS;
     try {
-      if (Date.now() - lastRace > RACE_GAP_MS) {
-        await syncRace(baseline);
-        lastRace = Date.now();
-      }
       if (Date.now() - lastSocial > SOCIAL_GAP_MS) {
         await syncSocials(baseline);
         lastSocial = Date.now();
@@ -325,16 +406,9 @@ async function loop() {
         await syncBanners();
         lastBanner = Date.now();
       }
-      const address = nextAddress();
-      if (address) {
-        await syncOrders(address, baseline);
-      } else {
-        paused = 5000;
-      }
-      await flushAlerts();
     } catch (error) {
-      console.error("paid watch", error.message);
+      console.error("paid maintenance", error.message);
     }
-    await sleep(paused);
+    await sleep(5000);
   }
 }

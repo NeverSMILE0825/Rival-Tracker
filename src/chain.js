@@ -205,6 +205,48 @@ export async function headBlock() {
   return Number(BigInt(hex));
 }
 
+export async function transactionCounts(addresses) {
+  const list = [...new Set(addresses.map((address) => String(address || "").toLowerCase()))].filter((address) =>
+    /^0x[a-f0-9]{40}$/.test(address),
+  );
+  if (!list.length) return new Map();
+  const body = list.map((address, index) => ({
+    jsonrpc: "2.0",
+    id: index,
+    method: "eth_getTransactionCount",
+    params: [address, "latest"],
+  }));
+  let lastError;
+  for (let index = 0; index < RPCS.length; index += 1) {
+    const url = RPCS[(rpcCursor + index) % RPCS.length];
+    try {
+      const payload = await fetchJson(
+        url,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        },
+        15000,
+      );
+      const rows = Array.isArray(payload) ? payload : [payload];
+      const counts = new Map();
+      for (const item of rows) {
+        if (!item || item.result == null || item.error) continue;
+        const address = list[Number(item.id)];
+        if (!address) continue;
+        counts.set(address, Number(BigInt(item.result)));
+      }
+      if (!counts.size) throw new Error("Nonce batch was empty");
+      rpcCursor = (rpcCursor + index) % RPCS.length;
+      return counts;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError || new Error("Nonce batch failed");
+}
+
 export async function blockByTime(timestamp, closest = "before") {
   const now = Math.floor(Date.now() / 1000);
   if (timestamp >= now - 15) return headBlock();

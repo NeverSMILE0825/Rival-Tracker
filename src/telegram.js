@@ -1,6 +1,6 @@
 import { getSettings, listFundingsForDeployer } from "./db.js";
 import { lookupLaunchMarket } from "./market.js";
-import { formatKst, timezoneLabel } from "./util.js";
+import { formatKst, sleep, timezoneLabel } from "./util.js";
 
 const CLOCK_SKEW_SEC = 120;
 
@@ -13,17 +13,18 @@ export async function notifyLaunch(launch) {
     if (!since || launchedAt + CLOCK_SKEW_SEC < since) return;
     const zone = timezoneLabel(settings.timezoneOffset);
     const title = launch.name ? `${launch.symbol} (${launch.name})` : launch.symbol || "token";
-    const market = await lookupLaunchMarket(launch.address);
+    const marketPromise = lookupLaunchMarket(launch.address);
+    const market = await Promise.race([marketPromise, sleep(1200).then(() => null)]).catch(() => null);
     const text = [
       `New launch · ${title}`,
       `Rival: ${launch.rival || "unknown"}`,
       `Launched: ${formatKst(launchedAt, settings.timezoneOffset)} ${zone}`,
       `Creator: ${launch.deployer || ""}`,
       `Token: ${launch.address}`,
-      market.dextoolsUrl,
-      market.dexscreenerUrl,
+      market?.dextoolsUrl || `https://www.dextools.io/app/ether/token/${launch.address}`,
+      market?.dexscreenerUrl || `https://dexscreener.com/ethereum/${launch.address}`,
     ].join("\n");
-    await sendTelegram(text, { photo: market.imageUrl });
+    await sendTelegram(text, { photo: market?.imageUrl || "" });
   } catch (error) {
     console.error("telegram", error.message);
   }

@@ -426,6 +426,20 @@ export function countQueued(competitorId) {
   );
 }
 
+export function listHotDeployers(seconds, limit) {
+  const since = nowSec() - Math.max(60, Number(seconds) || 0);
+  return db
+    .prepare(
+      `SELECT address, status, first_funded_at, tx_count
+       FROM deployers
+       WHERE status IN ('waiting', 'queued', 'drained')
+         AND first_funded_at > ?
+       ORDER BY first_funded_at DESC
+       LIMIT ?`,
+    )
+    .all(since, Math.max(1, Number(limit) || 1));
+}
+
 export function dueDeployers(competitorId, limit) {
   const now = nowSec();
   return db
