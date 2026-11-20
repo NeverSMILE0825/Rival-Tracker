@@ -321,17 +321,11 @@ app.post("/api/telegram/test", async (req, res) => {
   try {
     await sendTelegram(
       [
-        "<b>RIVAL TRACKER</b>",
-        "Alerts are connected.",
-        "",
-        "<b>NEW LAUNCH</b>  ·  $<b>SYMBOL</b>",
-        "Token name",
-        "",
-        "<b>MCAP</b>  $63.0K    +119%",
-        "<b>LIQ</b>  $17.2K",
-        "<b>24H VOL</b>  $128K",
-        "",
-        "Launch and paid alerts use this card, with the token banner when one exists.",
+        "🚀 <b>NEW LAUNCH</b> · $<b>SYMBOL</b> — Token name",
+        "MC $63K · Liq $17.2K · 🕐 42m",
+        "24h: +119%",
+        "👤 Rival",
+        "DexScreener · Dextools · Etherscan",
       ].join("\n"),
       { token, chatId },
     );

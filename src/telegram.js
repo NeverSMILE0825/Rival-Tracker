@@ -1,5 +1,6 @@
 import { getSettings, listFundingsForDeployer } from "./db.js";
 import { lookupLaunchMarket } from "./market.js";
+import { renderAlertCard } from "./card.js";
 import { formatKst, sleep, timezoneLabel } from "./util.js";
 
 const CLOCK_SKEW_SEC = 120;
@@ -14,21 +15,33 @@ export async function notifyLaunch(launch) {
     const marketPromise = lookupLaunchMarket(launch.address);
     const market = await Promise.race([marketPromise, sleep(1200).then(() => null)]).catch(() => null);
     const links = tokenLinks(launch.address, launch.deployer, market);
-    const text = [
-      `<b>NEW LAUNCH</b>  ·  $${bold(launch.symbol || "TOKEN")}`,
-      nameLine(launch.name),
-      "",
-      marketBlock(market),
-      "",
-      metaLine("Rival", launch.rival || "unknown"),
-      metaLine("Launched", stamp(launchedAt, settings)),
-      metaLine("Creator", shortAddr(launch.deployer)),
-      "",
-      linkLine(links),
-    ]
-      .filter((line) => line != null)
-      .join("\n");
-    await sendTelegram(text, { photo: market?.imageUrl || "", buttons: linkButtons(links) });
+    const when = launchedAt || market?.pairCreatedAt || 0;
+    const text = caption({
+      emoji: "🚀",
+      title: "NEW LAUNCH",
+      symbol: launch.symbol,
+      name: launch.name,
+      market,
+      age: ageLabel(when),
+      rank: market?.rank,
+      rival: launch.rival || "unknown",
+      address: launch.address,
+      links,
+    });
+    const photoBuffer = await cardImage({
+      symbol: launch.symbol,
+      name: launch.name,
+      bannerUrl: market?.imageUrl || "",
+      logoUrl: market?.logoUrl || logoUrl(launch.address),
+      marketCap: market?.marketCap,
+      liquidityUsd: market?.liquidityUsd,
+      volume24h: market?.volume24h,
+      priceChange24h: market?.priceChange24h,
+      ageLabel: ageLabel(when),
+      createdLabel: stamp(when, settings),
+      rank: market?.rank,
+    });
+    await sendTelegram(text, { photo: market?.imageUrl || "", photoBuffer, buttons: linkButtons(links) });
   } catch (error) {
     console.error("telegram", error.message);
   }
@@ -44,22 +57,35 @@ export async function notifyPaid(payment) {
     dextoolsUrl: payment.dextools_url,
     dexscreenerUrl: payment.dexscreener_url,
   });
-  const text = [
-    `<b>${paidTitle(payment)}</b>  ·  $${bold(payment.symbol || "TOKEN")}`,
-    nameLine(payment.name),
-    "",
-    esc(payment.detail || "Promotion"),
-    "",
-    marketBlock(payment),
-    "",
-    metaLine("Paid", stamp(payment.paid_at, settings)),
-    metaLine("Rival", rival),
-    "",
-    linkLine(links),
-  ]
-    .filter((line) => line != null)
-    .join("\n");
-  await sendTelegram(text, { photo: payment.banner_url || "", buttons: linkButtons(links) });
+  const kind = paidKind(payment);
+  const when = Number(payment.pair_created_at) || Number(payment.created_at) || Number(payment.paid_at) || 0;
+  const text = caption({
+    emoji: kind.emoji,
+    title: kind.title,
+    detail: payment.detail,
+    symbol: payment.symbol,
+    name: payment.name,
+    market: payment,
+    age: ageLabel(when),
+    rank: payment.rank,
+    rival,
+    address: payment.token_address,
+    links,
+  });
+  const photoBuffer = await cardImage({
+    symbol: payment.symbol,
+    name: payment.name,
+    bannerUrl: payment.banner_url || "",
+    logoUrl: logoUrl(payment.token_address),
+    marketCap: payment.market_cap,
+    liquidityUsd: payment.liquidity_usd,
+    volume24h: payment.volume_24h,
+    priceChange24h: payment.price_change_24h,
+    ageLabel: ageLabel(when),
+    createdLabel: stamp(when, settings),
+    rank: payment.rank,
+  });
+  await sendTelegram(text, { photo: payment.banner_url || "", photoBuffer, buttons: linkButtons(links) });
   return true;
 }
 
@@ -69,14 +95,22 @@ export async function sendTelegram(text, override = {}) {
   const chatId = String(override.chatId || settings.telegramChatId || "").trim();
   if (!token || !chatId) throw new Error("Add a bot token and a chat id first.");
   const buttons = override.buttons || sampleButtons();
+  const captionText = String(text || "").slice(0, 1000);
+  if (override.photoBuffer) {
+    try {
+      await postTelegramPhoto(token, chatId, override.photoBuffer, captionText, buttons);
+      return;
+    } catch (error) {
+      console.error("telegram card", error.message);
+    }
+  }
   const photo = String(override.photo || "").trim();
-  const caption = String(text || "").slice(0, 1000);
   if (photo) {
     try {
       await postTelegram(token, "sendPhoto", {
         chat_id: chatId,
         photo,
-        caption,
+        caption: captionText,
         parse_mode: "HTML",
         reply_markup: buttons,
       });
@@ -87,11 +121,56 @@ export async function sendTelegram(text, override = {}) {
   }
   await postTelegram(token, "sendMessage", {
     chat_id: chatId,
-    text: caption,
+    text: captionText,
     parse_mode: "HTML",
     disable_web_page_preview: true,
     reply_markup: buttons,
   });
+}
+
+async function cardImage(card) {
+  try {
+    return await Promise.race([renderAlertCard(card), sleep(8000).then(() => null)]);
+  } catch (error) {
+    console.error("alert card", error.message);
+    return null;
+  }
+}
+
+function caption(info) {
+  const symbol = info.symbol || "TOKEN";
+  const name = String(info.name || "").trim();
+  const head = [
+    `${info.emoji} <b>${esc(info.title)}</b>`,
+    info.detail ? esc(info.detail) : "",
+    `$${bold(symbol)}${name ? ` — ${esc(name)}` : ""}`,
+  ].filter(Boolean).join(" · ");
+  const cap = money(info.market?.marketCap ?? info.market?.market_cap);
+  const liq = money(info.market?.liquidityUsd ?? info.market?.liquidity_usd);
+  const move = signedChange(info.market?.priceChange24h ?? info.market?.price_change_24h);
+  const rank = Number(info.rank) > 0 ? `🔥 #${Number(info.rank)}` : "";
+  const lines = [
+    head,
+    `MC ${cap} · Liq ${liq}${info.age ? ` · 🕐 ${esc(info.age)}` : ""}`,
+    [move ? `24h: ${move}` : "", rank].filter(Boolean).join(" · "),
+    info.rival ? `👤 ${esc(info.rival)}` : "",
+    info.address ? `<code>${esc(info.address)}</code>` : "",
+    linkLine(info.links),
+  ];
+  return lines.filter(Boolean).join("\n");
+}
+
+function paidKind(payment) {
+  if (payment.source === "dextools" && payment.kind === "nitro") return { emoji: "⚡", title: "NITRO" };
+  if (payment.source === "dextools") return { emoji: "🟣", title: "DEXTOOLS" };
+  if (payment.kind === "boost") return { emoji: "🟢", title: "BOOST" };
+  return { emoji: "🟢", title: "DEX PAID" };
+}
+
+function logoUrl(address) {
+  const token = String(address || "").toLowerCase();
+  if (!/^0x[a-f0-9]{40}$/.test(token)) return "";
+  return `https://dd.dexscreener.com/ds-data/tokens/ethereum/${token}.png?size=lg`;
 }
 
 function sampleButtons() {
@@ -118,7 +197,7 @@ function tokenLinks(address, creator, market = {}) {
 
 function linkButtons(links) {
   const items = [
-    ["Dexscreener", links.dexscreener],
+    ["DexScreener", links.dexscreener],
     ["Dextools", links.dextools],
     ["Etherscan", links.etherscan],
     ["Creator", links.creator],
@@ -133,8 +212,9 @@ function linkButtons(links) {
 }
 
 function linkLine(links) {
+  if (!links) return "";
   const parts = [
-    ["Dexscreener", links.dexscreener],
+    ["DexScreener", links.dexscreener],
     ["Dextools", links.dextools],
     ["Etherscan", links.etherscan],
     ["Website", links.website],
@@ -142,39 +222,7 @@ function linkLine(links) {
   ]
     .filter(([, url]) => /^https?:\/\//i.test(String(url || "")))
     .map(([label, url]) => `<a href="${esc(url)}">${label}</a>`);
-  return parts.join("  ·  ");
-}
-
-function paidTitle(payment) {
-  if (payment.source === "dextools" && payment.kind === "nitro") return "NITRO";
-  if (payment.source === "dextools") return "DEXTOOLS UPDATE";
-  if (payment.kind === "boost") return "BOOST";
-  return "DEX PAID";
-}
-
-function marketBlock(market) {
-  if (!market) return "Pool not listed yet";
-  const cap = money(market.marketCap ?? market.market_cap);
-  const liq = money(market.liquidityUsd ?? market.liquidity_usd);
-  const vol = money(market.volume24h ?? market.volume_24h);
-  const move = signedChange(market.priceChange24h ?? market.price_change_24h);
-  if (cap === "—" && liq === "—" && vol === "—") return "Pool not listed yet";
-  return [
-    `<b>MCAP</b>  ${cap}${move ? `    ${move}` : ""}`,
-    `<b>LIQ</b>  ${liq}`,
-    `<b>24H VOL</b>  ${vol}`,
-  ].join("\n");
-}
-
-function nameLine(name) {
-  const text = String(name || "").trim();
-  return text ? esc(text) : null;
-}
-
-function metaLine(label, value) {
-  const text = String(value || "").trim();
-  if (!text) return null;
-  return `${label}  ${esc(text)}`;
+  return parts.join(" · ");
 }
 
 function stamp(unix, settings) {
@@ -182,24 +230,37 @@ function stamp(unix, settings) {
   return `${formatKst(unix, settings.timezoneOffset)} ${timezoneLabel(settings.timezoneOffset)}`;
 }
 
-function bold(value) {
-  return `<b>${esc(value)}</b>`;
+function ageLabel(unix) {
+  const at = Number(unix);
+  if (!at) return "";
+  const seconds = Math.max(0, Math.floor(Date.now() / 1000) - at);
+  const minutes = Math.floor(seconds / 60);
+  const hours = Math.floor(minutes / 60);
+  const days = Math.floor(hours / 24);
+  if (days >= 365) return `${Math.floor(days / 365)}y`;
+  if (days >= 1) return hours % 24 ? `${days}d ${hours % 24}h` : `${days}d`;
+  if (hours >= 1) return minutes % 60 ? `${hours}h ${minutes % 60}m` : `${hours}h`;
+  if (minutes >= 1) return `${minutes}m`;
+  return `${Math.max(1, seconds)}s`;
 }
 
-function shortAddr(value) {
-  const text = String(value || "");
-  if (text.length < 12) return text;
-  return `${text.slice(0, 6)}…${text.slice(-4)}`;
+function bold(value) {
+  return `<b>${esc(value)}</b>`;
 }
 
 function money(value) {
   const number = Number(value);
   if (!Number.isFinite(number) || number <= 0) return "—";
-  if (number >= 1e9) return `$${(number / 1e9).toFixed(2)}B`;
-  if (number >= 1e6) return `$${(number / 1e6).toFixed(2)}M`;
-  if (number >= 1e3) return `$${(number / 1e3).toFixed(1)}K`;
+  if (number >= 1e9) return `$${trimNumber(number / 1e9)}B`;
+  if (number >= 1e6) return `$${trimNumber(number / 1e6)}M`;
+  if (number >= 1e3) return `$${trimNumber(number / 1e3)}K`;
   if (number >= 1) return `$${number.toFixed(2)}`;
   return `$${number.toPrecision(2)}`;
+}
+
+function trimNumber(value) {
+  const rounded = value >= 100 ? Math.round(value) : Math.round(value * 10) / 10;
+  return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1);
 }
 
 function signedChange(value) {
@@ -217,6 +278,29 @@ function esc(value) {
     ">": "&gt;",
     '"': "&quot;",
   })[char]);
+}
+
+async function postTelegramPhoto(token, chatId, png, captionText, buttons) {
+  const form = new FormData();
+  form.append("chat_id", chatId);
+  form.append("caption", captionText);
+  form.append("parse_mode", "HTML");
+  form.append("reply_markup", JSON.stringify(buttons));
+  form.append("photo", new Blob([png], { type: "image/jpeg" }), "alert.jpg");
+  let response;
+  try {
+    response = await fetch(`https://api.telegram.org/bot${token}/sendPhoto`, {
+      method: "POST",
+      body: form,
+      signal: AbortSignal.timeout(20000),
+    });
+  } catch {
+    throw new Error("Could not reach Telegram.");
+  }
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || data.ok === false) {
+    throw new Error(data.description || `Telegram rejected the photo (${response.status})`);
+  }
 }
 
 async function postTelegram(token, method, body) {

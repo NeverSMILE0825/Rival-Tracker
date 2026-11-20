@@ -126,6 +126,8 @@ export async function lookupLaunchMarket(address) {
       : `https://www.dextools.io/app/ether/token/${token}`,
     dexscreenerUrl: best?.url || `https://dexscreener.com/ethereum/${token}`,
     imageUrl: header || "",
+    logoUrl: typeof best?.info?.imageUrl === "string" ? best.info.imageUrl : "",
+    pairCreatedAt: best?.pairCreatedAt ? Math.floor(Number(best.pairCreatedAt) / 1000) : null,
     priceUsd: best?.priceUsd != null ? Number(best.priceUsd) : null,
     liquidityUsd: best?.liquidity?.usd != null ? Number(best.liquidity.usd) : null,
     marketCap: best?.marketCap != null ? Number(best.marketCap) : null,
