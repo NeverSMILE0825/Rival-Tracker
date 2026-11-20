@@ -117,15 +117,29 @@ export async function lookupLaunchMarket(address) {
   const pairAddress = best?.pairAddress || saved?.pair_address || "";
   const header = pairs.map((pair) => pair.info?.header).find((url) => typeof url === "string" && url.startsWith("https://")) || "";
   if (header) setTokenBanner(token, header);
-  const imageUrl = header;
+  const socials = Array.isArray(best?.info?.socials) ? best.info.socials : [];
+  const website = Array.isArray(best?.info?.websites) ? best.info.websites[0]?.url || "" : "";
   return {
     pairAddress,
     dextoolsUrl: pairAddress
       ? `https://www.dextools.io/app/ether/pair-explorer/${pairAddress}`
       : `https://www.dextools.io/app/ether/token/${token}`,
-    dexscreenerUrl: `https://dexscreener.com/ethereum/${token}`,
-    imageUrl: imageUrl || "",
+    dexscreenerUrl: best?.url || `https://dexscreener.com/ethereum/${token}`,
+    imageUrl: header || "",
+    priceUsd: best?.priceUsd != null ? Number(best.priceUsd) : null,
+    liquidityUsd: best?.liquidity?.usd != null ? Number(best.liquidity.usd) : null,
+    marketCap: best?.marketCap != null ? Number(best.marketCap) : null,
+    volume24h: best?.volume?.h24 != null ? Number(best.volume.h24) : null,
+    priceChange24h: best?.priceChange?.h24 != null ? Number(best.priceChange.h24) : null,
+    website: /^https?:\/\//i.test(website) ? website : "",
+    twitter: socialUrl(socials, "twitter"),
   };
+}
+
+function socialUrl(socials, type) {
+  const match = socials.find((item) => String(item?.type || "").toLowerCase() === type);
+  const url = String(match?.url || "");
+  return /^https?:\/\//i.test(url) ? url : "";
 }
 
 async function fetchPairs(addresses) {

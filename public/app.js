@@ -115,9 +115,13 @@ function formatUsd(value) {
 function formatPrice(value) {
   const number = Number(value);
   if (!Number.isFinite(number)) return "—";
-  if (number >= 1) return `$${number.toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
+  if (number >= 1000) return `$${number.toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
+  if (number >= 1) return `$${number.toFixed(2)}`;
+  if (number >= 0.01) return `$${number.toFixed(4)}`;
   if (number >= 0.0001) return `$${number.toFixed(6)}`;
-  return `$${number.toExponential(2)}`;
+  if (number === 0) return "$0";
+  if (number < 1e-10) return `$${number.toExponential(2)}`;
+  return `$${number.toFixed(10).replace(/0+$/, "")}`;
 }
 
 function formatChange(value) {
@@ -185,9 +189,9 @@ function paint() {
     document.getElementById("app").innerHTML = `
       <div class="shell">
         <aside class="side">
-          <div class="brand"><div class="mark">R</div><div><h1>RIVAL</h1><p>Ethereum mainnet</p></div></div>
+          <div class="brand"><div class="mark">R</div><div><h1>Rival Tracker</h1><p>Ethereum</p></div></div>
           <nav class="nav" id="nav"></nav>
-          <p class="hint">Each rival funds creator wallets. Wallets that still hold the ETH are waiting to launch. Deployed tokens show price, liquidity, and Dextools.</p>
+          <p class="hint">Funded wallets, the tokens they launch, and paid promotions.</p>
         </aside>
         <main class="main">
           <div class="top">
@@ -228,8 +232,8 @@ function paintNav() {
   const html = items
     .map(
       ([id, label, count]) =>
-        `<button data-act="route" data-route="${id}" class="${state.route === id ? "active" : ""}">${label}${
-          count !== "" ? `<b>${count}</b>` : ""
+        `<button data-act="route" data-route="${id}" class="${state.route === id ? "active" : ""}"><span>${label}</span>${
+          count !== "" ? `<b class="count">${count}</b>` : ""
         }</button>`,
     )
     .join("");
@@ -358,8 +362,8 @@ function viewOverview() {
       </section>
     </div>
     <section class="card" style="margin-top:12px">
-      <div style="display:flex;justify-content:space-between;align-items:center">
-        <h3 style="margin:0">Activity</h3>
+      <div class="panel-head">
+        <h3>Activity</h3>
         <button class="btn" data-act="read">Mark read</button>
       </div>
       <div class="activity">
@@ -440,7 +444,7 @@ function walletRow(wallet) {
     <td>${esc(formatEth(wallet.eth_balance_wei))}</td>
     <td>${esc(formatKst(wallet.first_funded_at))}</td>
     <td class="${ageClass}">${esc(formatAge(wallet.first_funded_at))}</td>
-    <td><a href="https://etherscan.io/address/${esc(wallet.address)}" target="_blank" rel="noreferrer">Etherscan</a></td>
+    <td><a class="link-pill" href="https://etherscan.io/address/${esc(wallet.address)}" target="_blank" rel="noreferrer">Etherscan</a></td>
   </tr>`;
 }
 
@@ -469,11 +473,11 @@ function viewTokens() {
         { label: "Token", key: "symbol", type: "text" },
         { label: "Rival", key: "rival", type: "text" },
         { label: `Launched (${zoneLabel()})`, key: "launched", type: "number" },
-        { label: "Liquidity", key: "liquidity", type: "number" },
-        { label: "MCap", key: "mcap", type: "number" },
-        { label: "24h", key: "change", type: "number" },
-        { label: "Total tx", key: "txTotal", type: "number" },
-        { label: "24h tx", key: "tx24h", type: "number" },
+        { label: "Liquidity", key: "liquidity", type: "number", align: "right" },
+        { label: "MCap", key: "mcap", type: "number", align: "right" },
+        { label: "24h", key: "change", type: "number", align: "right" },
+        { label: "Total tx", key: "txTotal", type: "number", align: "right" },
+        { label: "24h tx", key: "tx24h", type: "number", align: "right" },
         { label: "Paid Status", key: "paid", type: "number" },
         { label: "" },
       ],
@@ -535,11 +539,13 @@ function tokenBanner(token) {
   const quote = token.quote || "ETH";
   const age = formatBannerAge(token.launched);
   const exchange = exchangeTitle(token.dex, token.label);
-  const rank = Number(token.rank) > 0 ? `#${Number(token.rank)}` : "";
+  const rank = Number(token.rank) > 0
+    ? `<span class="banner-rank"><svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 1.2c.4 1.6-.2 2.7-1.1 3.6-.7.7-1.4 1.5-1.2 2.7.1.8.7 1.4 1.1 2 .5.7.6 1.5.3 2.3 1.2-.7 2.2-1.8 2.5-3.2.2 1 .9 1.8 1.8 2.2.4-1.3 0-2.4-.7-3.3 1.3.2 2.3-.4 2.8-1.5-1 .6-1.8.5-2.6 0 .8-1.2 1-2.6.9-4.1-.9.8-1.6 1.9-2 3.2-.3-1.5-.8-2.8-1.8-3.9Z"/></svg>#${Number(token.rank)}</span>`
+    : "";
   return `<div class="token-banner">
     <div class="token-banner-top">
       <span class="token-banner-name"><span class="token-check">✓</span>${esc(token.symbol)} / ${esc(quote)}</span>
-      <span class="token-banner-stats">${age ? `<span class="banner-age">${esc(age)}</span>` : ""}${rank ? `<span class="banner-rank">${esc(rank)}</span>` : ""}</span>
+      <span class="token-banner-stats">${age ? `<span class="banner-age">${esc(age)}</span>` : ""}${rank}</span>
     </div>
     <div class="token-banner-pills"><span>Ethereum</span>${exchange ? `<span>${esc(exchange)}</span>` : ""}</div>
     <img class="${bannerIsIcon(token.banner) ? "is-icon" : ""}" src="${esc(token.banner)}" alt="" onerror="this.closest('.token-banner').remove()" />
@@ -569,11 +575,21 @@ function paidCell(payments, compact = false) {
   }
   return `<div class="paid-list">${rows
     .map((payment) => {
-      const source = payment.source === "dextools" ? "Dextools" : "Dexscreener";
-      const tone = payment.source === "dextools" ? "thin" : "live";
-      return `<div class="paid-item"><span class="pill ${tone}">${source}</span><span>${esc(payment.detail)}</span><span class="muted">${esc(formatKst(payment.paid_at))}</span></div>`;
+      const badge = paidBadge(payment);
+      return `<div class="paid-card"><div class="paid-card-top"><span class="pill ${badge.tone}">${esc(badge.label)}</span><span class="muted">${esc(formatKst(payment.paid_at))} ${zoneLabel()}</span></div><b>${esc(payment.detail || "Promotion")}</b></div>`;
     })
     .join("")}</div>`;
+}
+
+function changeCell(value) {
+  const number = Number(value);
+  const text = formatChange(value);
+  if (!Number.isFinite(number) || number === 0) return `<span class="chg">${esc(text)}</span>`;
+  return `<span class="chg ${number > 0 ? "up" : "down"}">${esc(text)}</span>`;
+}
+
+function metric(label, value, tone = "") {
+  return `<div class="metric"><span>${esc(label)}</span><strong class="${tone}">${esc(value)}</strong></div>`;
 }
 
 function tokenRow(token) {
@@ -583,15 +599,15 @@ function tokenRow(token) {
     <td class="token-cell"><span class="token-line">${tokenThumb(token)}<span class="token-name"><b>${esc(token.symbol)}</b> <span class="muted">(${esc(token.name)})</span>${exchange}</span></span></td>
     <td>${esc(token.rival)}</td>
     <td>${esc(formatKst(token.launched))}</td>
-    <td>${esc(formatUsd(token.liquidity))}</td>
-    <td>${esc(formatUsd(token.mcap))}</td>
-    <td>${esc(formatChange(token.change))}</td>
-    <td>${esc(formatCount(token.txTotal))}</td>
-    <td>${esc(formatCount(token.tx24h))}</td>
+    <td class="num">${esc(formatUsd(token.liquidity))}</td>
+    <td class="num">${esc(formatUsd(token.mcap))}</td>
+    <td class="num">${changeCell(token.change)}</td>
+    <td class="num">${esc(formatCount(token.txTotal))}</td>
+    <td class="num">${esc(formatCount(token.tx24h))}</td>
     <td class="paid-cell">${paidCell(token.payments, true)}</td>
     <td class="links">
-      <a href="${esc(dextoolsHref(token))}" target="_blank" rel="noreferrer">Dextools</a>
-      <a href="${esc(token.dexscreener_url || `https://dexscreener.com/ethereum/${token.address}`)}" target="_blank" rel="noreferrer">Dex</a>
+      <a class="link-pill" href="${esc(dextoolsHref(token))}" target="_blank" rel="noreferrer">Dextools</a>
+      <a class="link-pill" href="${esc(token.dexscreener_url || `https://dexscreener.com/ethereum/${token.address}`)}" target="_blank" rel="noreferrer">Dexscreener</a>
     </td>
   </tr>`;
 }
@@ -722,7 +738,8 @@ function headerCell(column) {
   const sort = state.sort[state.route];
   const active = sort && sort.key === column.key;
   const mark = active ? (sort.dir === "asc" ? "↑" : "↓") : "";
-  return `<th><button type="button" class="sort ${active ? "on" : ""}" data-act="sort" data-key="${esc(column.key)}" data-type="${esc(column.type || "text")}">${esc(column.label)}${mark ? `<span>${mark}</span>` : ""}</button></th>`;
+  const align = column.align === "right" ? "num" : "";
+  return `<th class="${align}"><button type="button" class="sort ${active ? "on" : ""}" data-act="sort" data-key="${esc(column.key)}" data-type="${esc(column.type || "text")}">${esc(column.label)}${mark ? `<span>${mark}</span>` : ""}</button></th>`;
 }
 
 function paged(rows) {
@@ -954,7 +971,7 @@ function viewSettings() {
         <input name="telegramChatId" autocomplete="off" spellcheck="false" placeholder="Chat id" value="${esc(fieldValue("telegramChatId"))}" />
       </div>
     </div>
-    <label class="check"><input type="checkbox" name="telegramAlerts" ${settings.telegramAlerts === "1" ? "checked" : ""}/> Send a Telegram message when a new token launches</label>
+    <label class="check"><input type="checkbox" name="telegramAlerts" ${settings.telegramAlerts === "1" ? "checked" : ""}/> Send a Telegram card for each new launch and paid promotion</label>
     <label class="check"><input type="checkbox" name="autoScan" ${settings.autoScan === "1" ? "checked" : ""}/> Keep scanning enabled rivals on a timer</label>
     <label class="check"><input type="checkbox" name="requireFirstFunder" ${settings.requireFirstFunder === "1" ? "checked" : ""}/> Only keep a wallet when this rival is its first real ETH source</label>
       <p class="muted">Sample launches are funded with well under 1 ETH, so the maximum keeps treasury-sized transfers out of the waiting list. A wallet stays on the list when this rival is the first wallet that sent it real ETH. ${state.data.counts.ignored} wallets are hidden by that rule.</p>
@@ -1023,60 +1040,71 @@ function paintDrawer() {
     if (!wallet) return;
     const funding = wallet.fundings[0];
     root.innerHTML = `<div class="drawer-back"><aside class="drawer">
-      <button class="btn" data-act="close-drawer">Close</button>
-      <h3 style="margin-top:16px">${esc(shortAddr(wallet.address))}</h3>
-      <p class="muted">${esc(wallet.note || wallet.status)}</p>
+      <div class="drawer-head"><span class="drawer-kicker">Wallet</span><button class="icon-close" data-act="close-drawer" aria-label="Close">×</button></div>
+      <div class="token-title"><div><h3>${esc(shortAddr(wallet.address))}</h3><p>${esc(wallet.note || "Creator wallet")}</p></div><span class="pill ${esc(wallet.status)}">${esc(wallet.status)}</span></div>
+      <div class="metrics">
+        ${metric("Balance", `${formatEth(wallet.eth_balance_wei)} ETH`)}
+        ${metric("Funded", `${formatEth(funding?.value_wei)} ETH`)}
+        ${metric("Rival", rivalLabel(wallet.fundings))}
+        ${metric("Age", formatAge(wallet.first_funded_at))}
+      </div>
+      <div class="action-row">
+        <a class="action" href="https://etherscan.io/address/${esc(wallet.address)}" target="_blank" rel="noreferrer">Etherscan</a>
+        ${funding ? `<a class="action" href="https://etherscan.io/tx/${esc(funding.tx_hash)}" target="_blank" rel="noreferrer">Funding tx</a>` : ""}
+        <button class="action" data-act="copy" data-value="${esc(wallet.address)}">Copy address</button>
+        <button class="action" data-act="recheck-wallet" data-address="${esc(wallet.address)}">Check again</button>
+      </div>
       <div class="kv">
-        <span>Status</span><div><span class="pill ${esc(wallet.status)}">${esc(wallet.status)}</span></div>
-        <span>Balance</span><div>${esc(formatEth(wallet.eth_balance_wei))} ETH</div>
-        <span>Rival</span><div>${esc(rivalLabel(wallet.fundings))}</div>
-        <span>Funded</span><div>${esc(formatEth(funding?.value_wei))} ETH · ${esc(formatKst(funding?.timestamp))} ${zoneLabel()}</div>
-        <span>Source</span><div class="addr">${esc(funding?.funder || "")}</div>
+        <span>Funded</span><div>${esc(formatKst(funding?.timestamp))} ${zoneLabel()}</div>
+        <span>Source</span><div class="addr">${esc(funding?.funder || "—")}</div>
         <span>Txs seen</span><div>${esc(wallet.tx_count)}</div>
       </div>
-      <div class="links">
-        <a href="https://etherscan.io/address/${esc(wallet.address)}" target="_blank" rel="noreferrer">Wallet</a>
-        ${funding ? `<a href="https://etherscan.io/tx/${esc(funding.tx_hash)}" target="_blank" rel="noreferrer">Funding tx</a>` : ""}
-        <button class="btn" data-act="copy" data-value="${esc(wallet.address)}">Copy</button>
-        <button class="btn" data-act="recheck-wallet" data-address="${esc(wallet.address)}">Check again</button>
-      </div>
-      <h3 style="margin-top:22px;font-size:16px">Tokens</h3>
+      <div class="section-label">Tokens</div>
       ${tokensForDeployer(wallet.address)}
     </aside></div>`;
   } else {
     const token = state.data.tokens.find((item) => item.address === drawer.address);
     if (!token) return;
+    const pair = (token.pairs || []).slice().sort((a, b) => Number(b.liquidity_usd) - Number(a.liquidity_usd))[0] || {};
+    const move = Number(token.price_change_24h);
+    const moveTone = move > 0 ? "chg up" : move < 0 ? "chg down" : "";
     root.innerHTML = `<div class="drawer-back"><aside class="drawer">
-      <button class="btn" data-act="close-drawer">Close</button>
+      <div class="drawer-head"><span class="drawer-kicker">Token</span><button class="icon-close" data-act="close-drawer" aria-label="Close">×</button></div>
       ${tokenBanner({
         banner: token.banner_url,
         symbol: token.symbol,
-        quote: (token.pairs || []).slice().sort((a, b) => Number(b.liquidity_usd) - Number(a.liquidity_usd))[0]?.quote_symbol || "",
+        quote: pair.quote_symbol || "",
         launched: launchedAt(token),
         dex: token.dex,
-        label: (token.pairs || []).slice().sort((a, b) => Number(b.liquidity_usd) - Number(a.liquidity_usd))[0]?.label || "",
+        label: pair.label || "",
       })}
-      <h3 style="margin-top:16px">${esc(token.symbol)} <span class="muted">${esc(token.name)}</span></h3>
+      <div class="token-title">
+        <div><h3>$${esc(token.symbol || "—")}</h3><p>${esc(token.name || "Unnamed token")}</p></div>
+        <span class="pill ${esc(token.status)}">${esc(token.status)}</span>
+      </div>
+      <div class="metrics">
+        ${metric("Price", formatPrice(token.price_usd))}
+        ${metric("MCap", formatUsd(token.market_cap))}
+        ${metric("Liquidity", formatUsd(token.liquidity_usd))}
+        ${metric("24h", formatChange(token.price_change_24h), moveTone)}
+      </div>
+      <div class="action-row">
+        <a class="action" href="${esc(token.dexscreener_url || `https://dexscreener.com/ethereum/${token.address}`)}" target="_blank" rel="noreferrer">Dexscreener</a>
+        <a class="action" href="${esc(dextoolsHref(token))}" target="_blank" rel="noreferrer">Dextools</a>
+        <a class="action" href="https://etherscan.io/token/${esc(token.address)}" target="_blank" rel="noreferrer">Etherscan</a>
+        <button class="action" data-act="copy" data-value="${esc(token.address)}">Copy</button>
+        <button class="action" data-act="drawer-wallet" data-address="${esc(token.deployer)}">Creator</button>
+      </div>
+      <div class="section-label">Paid</div>
+      ${paidCell(token.payments)}
+      <div class="section-label">Details</div>
       <div class="kv">
-        <span>Paid</span><div>${paidCell(token.payments)}</div>
-        <span>Status</span><div><span class="pill ${esc(token.status)}">${esc(token.status)}</span></div>
-        <span>Launched</span><div>${esc(formatKst(launchedAt(token)))} ${zoneLabel()}</div>
-        <span>Contract time</span><div>${esc(formatKst(token.created_at))} ${zoneLabel()}</div>
-        <span>Price</span><div>${esc(formatPrice(token.price_usd))}</div>
-        <span>Liquidity</span><div>${esc(formatUsd(token.liquidity_usd))}</div>
-        <span>Market cap</span><div>${esc(formatUsd(token.market_cap))}</div>
         <span>24h volume</span><div>${esc(formatUsd(token.volume_24h))}</div>
-        <span>24h change</span><div>${esc(formatChange(token.price_change_24h))}</div>
+        <span>Launched</span><div>${esc(formatKst(launchedAt(token)))} ${zoneLabel()}</div>
+        <span>Contract</span><div>${esc(formatKst(token.created_at))} ${zoneLabel()}</div>
         <span>Rival</span><div>${esc(rivalLabel(token.fundings))}</div>
         <span>Creator</span><div class="addr">${esc(token.deployer)}</div>
         <span>Token</span><div class="addr">${esc(token.address)}</div>
-      </div>
-      <div class="links">
-        <a href="${esc(dextoolsHref(token))}" target="_blank" rel="noreferrer">Dextools</a>
-        <a href="${esc(token.dexscreener_url || "#")}" target="_blank" rel="noreferrer">Dexscreener</a>
-        <a href="https://etherscan.io/token/${esc(token.address)}" target="_blank" rel="noreferrer">Etherscan</a>
-        <button class="btn" data-act="copy" data-value="${esc(token.address)}">Copy token</button>
-        <button class="btn" data-act="drawer-wallet" data-address="${esc(token.deployer)}">Creator wallet</button>
       </div>
     </aside></div>`;
   }
@@ -1487,6 +1515,17 @@ async function actScan(id, extra = {}) {
 window.addEventListener("hashchange", () => {
   state.route = location.hash.replace("#/", "") || "overview";
   paint();
+});
+
+window.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape") return;
+  if (!state.drawer && !state.modal) return;
+  state.drawer = null;
+  state.modal = null;
+  const modal = document.getElementById("modal");
+  if (modal) modal.dataset.mode = "";
+  paintModal();
+  paintDrawer();
 });
 
 load().catch((error) => {

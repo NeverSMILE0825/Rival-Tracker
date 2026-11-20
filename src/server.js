@@ -319,10 +319,22 @@ app.post("/api/telegram/test", async (req, res) => {
     return res.status(400).json({ error: "Chat id must be the number from your Telegram chat." });
   }
   try {
-    await sendTelegram("Rival Tracker is connected. New token launches will show up here.", {
-      token,
-      chatId,
-    });
+    await sendTelegram(
+      [
+        "<b>RIVAL TRACKER</b>",
+        "Alerts are connected.",
+        "",
+        "<b>NEW LAUNCH</b>  ·  $<b>SYMBOL</b>",
+        "Token name",
+        "",
+        "<b>MCAP</b>  $63.0K    +119%",
+        "<b>LIQ</b>  $17.2K",
+        "<b>24H VOL</b>  $128K",
+        "",
+        "Launch and paid alerts use this card, with the token banner when one exists.",
+      ].join("\n"),
+      { token, chatId },
+    );
     res.json({ ok: true });
   } catch (error) {
     res.status(400).json({ error: error.message });
