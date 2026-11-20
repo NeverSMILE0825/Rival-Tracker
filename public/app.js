@@ -520,6 +520,11 @@ function exchangeTitle(dex, label) {
   return name || version || String(label || "");
 }
 
+function tokenThumb(token) {
+  if (!token.banner) return "";
+  return `<img class="token-thumb" src="${esc(token.banner)}" alt="" onerror="this.remove()" />`;
+}
+
 function tokenBanner(token) {
   if (!token.banner) return "";
   const quote = token.quote || "ETH";
@@ -536,10 +541,22 @@ function tokenBanner(token) {
   </div>`;
 }
 
-function paidCell(payments) {
-  const rows = [...(payments || [])].sort((a, b) => (Number(b.paid_at) || 0) - (Number(a.paid_at) || 0));
+function latestPayments(payments) {
+  const best = new Map();
+  for (const payment of payments || []) {
+    const key = `${payment.source}|${payment.kind}`;
+    const current = best.get(key);
+    if (!current || Number(payment.paid_at) > Number(current.paid_at)) best.set(key, payment);
+  }
+  return [...best.values()];
+}
+
+function paidCell(payments, compact = false) {
+  const rows = [...(compact ? latestPayments(payments) : payments || [])].sort(
+    (a, b) => (Number(b.paid_at) || 0) - (Number(a.paid_at) || 0),
+  );
   if (!rows.length) return `<span class="muted">—</span>`;
-  return `<div class="paid-list">${rows
+  return `<div class="paid-list${compact ? " compact" : ""}">${rows
     .map((payment) => {
       const source = payment.source === "dextools" ? "Dextools" : "Dexscreener";
       const tone = payment.source === "dextools" ? "thin" : "live";
@@ -552,7 +569,7 @@ function tokenRow(token) {
   const exchange = token.label ? `<span class="exch">${esc(token.label)}</span>` : "";
   return `<tr class="clickable" data-act="drawer-token" data-address="${esc(token.address)}">
     <td><span class="pill ${esc(token.status)}">${esc(token.status)}</span></td>
-    <td class="token-cell">${tokenBanner(token)}<span class="token-name"><b>${esc(token.symbol)}</b> <span class="muted">(${esc(token.name)})</span>${exchange}</span></td>
+    <td class="token-cell"><span class="token-line">${tokenThumb(token)}<span class="token-name"><b>${esc(token.symbol)}</b> <span class="muted">(${esc(token.name)})</span>${exchange}</span></span></td>
     <td>${esc(token.rival)}</td>
     <td>${esc(formatKst(token.launched))}</td>
     <td>${esc(formatUsd(token.liquidity))}</td>
@@ -560,7 +577,7 @@ function tokenRow(token) {
     <td>${esc(formatChange(token.change))}</td>
     <td>${esc(formatCount(token.txTotal))}</td>
     <td>${esc(formatCount(token.tx24h))}</td>
-    <td class="paid-cell">${paidCell(token.payments)}</td>
+    <td class="paid-cell">${paidCell(token.payments, true)}</td>
     <td class="links">
       <a href="${esc(dextoolsHref(token))}" target="_blank" rel="noreferrer">Dextools</a>
       <a href="${esc(token.dexscreener_url || `https://dexscreener.com/ethereum/${token.address}`)}" target="_blank" rel="noreferrer">Dex</a>

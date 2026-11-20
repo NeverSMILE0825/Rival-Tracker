@@ -141,6 +141,7 @@ a:hover { text-decoration: underline; }
 .table-scroll::-webkit-scrollbar-corner { background: transparent; }
 table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 14px; }
 th, td { padding: 11px 12px; text-align: left; border-bottom: 1px solid var(--line); vertical-align: middle; white-space: nowrap; }
+tbody td { height: 48px; padding-top: 8px; padding-bottom: 8px; box-sizing: border-box; }
 th {
   color: var(--muted); font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; font-weight: 650;
   position: sticky; top: 0; z-index: 1; background: #161b24;
@@ -153,9 +154,11 @@ th .sort {
 th .sort span { font-size: 10px; }
 th .sort.on { color: var(--text); }
 .token-cell .muted { margin-left: 4px; }
-td.token-cell { white-space: normal; }
+td.token-cell { white-space: nowrap; }
+.token-line { display: inline-flex; align-items: center; gap: 8px; }
 .token-name { display: inline-flex; align-items: center; }
-.token-banner { width: 300px; margin-bottom: 8px; border-radius: 12px; overflow: hidden; background: #0e131b; border: 1px solid rgba(255,255,255,0.08); }
+.token-thumb { width: 72px; height: 24px; object-fit: cover; border-radius: 4px; flex: none; display: block; }
+.token-banner { width: 100%; margin: 14px 0 8px; border-radius: 12px; overflow: hidden; background: #0e131b; border: 1px solid rgba(255,255,255,0.08); }
 .token-banner-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 10px 2px; }
 .token-banner-name { display: inline-flex; align-items: center; gap: 6px; font-weight: 750; font-size: 13px; }
 .token-check { width: 16px; height: 16px; border-radius: 4px; background: #1f8f4e; color: #fff; display: inline-flex; align-items: center; justify-content: center; font-size: 11px; line-height: 1; }
@@ -166,8 +169,11 @@ td.token-cell { white-space: normal; }
 .token-banner-pills span { background: #1b2330; color: #d7deea; border-radius: 999px; padding: 2px 8px; font-size: 11px; font-weight: 650; }
 .token-banner img { display: block; width: 100%; aspect-ratio: 3 / 1; object-fit: cover; }
 td.paid-cell { white-space: normal; min-width: 220px; }
-.paid-list { display: flex; flex-direction: column; gap: 4px; }
+.paid-list { display: flex; flex-direction: column; gap: 6px; }
+.paid-list.compact { flex-direction: row; flex-wrap: nowrap; align-items: center; gap: 14px; }
 .paid-item { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; font-size: 12px; }
+.paid-list.compact .paid-item { flex-wrap: nowrap; white-space: nowrap; }
+td.paid-cell { white-space: nowrap; }
 .exch {
   display: inline-flex; margin-left: 8px; padding: 1px 7px; border-radius: 999px;
   background: rgba(158, 191, 255, 0.16); color: var(--blue); font-size: 11px; font-weight: 700;
@@ -242,7 +248,7 @@ tr.clickable:hover td { background: rgba(255,255,255,0.025); }
 .event.unseen { box-shadow: inset 3px 0 0 var(--lime); }
 
 .drawer-back { position: fixed; inset: 0; background: rgba(0,0,0,0.45); display: flex; justify-content: flex-end; z-index: 20; }
-.drawer { width: min(460px, 100%); height: 100%; border-radius: 0; padding: 22px; overflow: auto; box-shadow: var(--shadow); }
+.drawer { width: min(640px, 100%); height: 100%; border-radius: 0; padding: 22px; overflow: auto; box-shadow: var(--shadow); }
 .drawer h3 { margin: 0 0 4px; font-size: 22px; }
 .kv { display: grid; grid-template-columns: 120px 1fr; gap: 8px 10px; margin: 16px 0; font-size: 14px; }
 .kv span { color: var(--muted); }

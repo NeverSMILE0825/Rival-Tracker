@@ -11,9 +11,12 @@ import { nowSec, sleep } from "./util.js";
 
 const ORDER_GAP_MS = 1100;
 const RACE_GAP_MS = 60_000;
+const SOCIAL_GAP_MS = 60_000;
+const NOVEMBER_START = Math.floor(Date.parse("2026-11-01T00:00:00+09:00") / 1000);
 const priority = [];
 let cursor = 0;
 let lastRace = 0;
+let lastSocial = 0;
 let started = false;
 let chain = Promise.resolve();
 
@@ -148,7 +151,7 @@ async function syncRace(baseline) {
     let response;
     try {
       response = await fetch(
-        `https://www.dextools.io/api/core/pool/listing/token-race?chains=ether&page=${page}&pageSize=100`,
+        `https://www.dextools.io/api/core/pool/listing/token-race?chains=ether&page=${page}&pageSize=100&lite=false`,
         {
           headers: { accept: "application/json", "X-API-Version": "2" },
           signal: AbortSignal.timeout(20000),
@@ -187,6 +190,48 @@ async function syncRace(baseline) {
   }
 }
 
+async function syncSocials(baseline) {
+  const known = new Set(listTokenAddresses());
+  if (!known.size) return;
+  for (let page = 0; page < 8; page += 1) {
+    let response;
+    try {
+      response = await fetch(
+        `https://www.dextools.io/api/core/token/listings/social-network-updates/list?limit=50&chain=ether&page=${page}`,
+        {
+          headers: { accept: "application/json", "X-API-Version": "1" },
+          signal: AbortSignal.timeout(20000),
+        },
+      );
+    } catch (error) {
+      console.error("paid dextools info", error.message);
+      return;
+    }
+    if (!response.ok) return;
+    const payload = await response.json().catch(() => ({}));
+    const rows = payload.data?.result || [];
+    if (!rows.length) break;
+    let oldest = Number.POSITIVE_INFINITY;
+    for (const row of rows) {
+      const address = String(row.id || "").toLowerCase();
+      const paidAt = unixTime(Date.parse(row.updatedAt || ""));
+      if (paidAt) oldest = Math.min(oldest, paidAt);
+      if (!known.has(address) || !paidAt) continue;
+      savePaid({
+        fingerprint: `dextools|info|${address}|${paidAt}`,
+        tokenAddress: address,
+        source: "dextools",
+        kind: "info",
+        amount: null,
+        paidAt,
+        detail: "Token info update",
+        baseline,
+      });
+    }
+    if (oldest < NOVEMBER_START) break;
+  }
+}
+
 async function flushAlerts() {
   const rows = listUnalertedPaid();
   for (const row of rows) {
@@ -207,6 +252,10 @@ async function loop() {
       if (Date.now() - lastRace > RACE_GAP_MS) {
         await syncRace(baseline);
         lastRace = Date.now();
+      }
+      if (Date.now() - lastSocial > SOCIAL_GAP_MS) {
+        await syncSocials(baseline);
+        lastSocial = Date.now();
       }
       const address = nextAddress();
       if (address) {
