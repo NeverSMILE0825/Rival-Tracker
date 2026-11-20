@@ -303,6 +303,21 @@ if (!pairColumns.some((column) => column.name === "quote_symbol")) {
 }
 
 db.exec(`
+  UPDATE tokens
+  SET txns_total = (
+    SELECT SUM(txns_24h) FROM token_pairs WHERE token_address = tokens.address
+  )
+  WHERE COALESCE((
+    SELECT SUM(txns_24h) FROM token_pairs WHERE token_address = tokens.address
+  ), 0) > COALESCE(txns_total, 0)
+`);
+db.exec(`
+  UPDATE tokens
+  SET txns_total = txns_24h
+  WHERE COALESCE(txns_24h, 0) > COALESCE(txns_total, 0)
+`);
+
+db.exec(`
   CREATE TABLE IF NOT EXISTS token_paid (
     fingerprint TEXT PRIMARY KEY,
     token_address TEXT NOT NULL,

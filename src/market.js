@@ -83,10 +83,22 @@ async function fetchTransferCount(address) {
     }
     if (!response.ok) throw new Error(`Blockscout HTTP ${response.status}`);
     const payload = await response.json();
-    const count = Number(payload.transfers_count);
-    return Number.isFinite(count) ? count : null;
+    return parseCount(payload.transfers_count);
   }
   return null;
+}
+
+function parseCount(value) {
+  const digits = String(value ?? "").replace(/[^\d]/g, "");
+  if (!digits) return null;
+  const count = Number(digits);
+  return Number.isFinite(count) ? count : null;
+}
+
+function largestCount(...values) {
+  const counts = values.map((value) => Number(value)).filter((value) => Number.isFinite(value) && value > 0);
+  if (!counts.length) return null;
+  return Math.max(...counts);
 }
 
 function bestPair(pairs) {
@@ -221,12 +233,14 @@ async function refreshMarketsNow(addresses) {
         return best;
       }, null);
       const previousPeak = Number(existing.peak_liquidity_usd) || 0;
-      let txnsTotal = null;
+      let indexedTotal = null;
       try {
-        txnsTotal = await fetchTransferCount(address);
+        indexedTotal = await fetchTransferCount(address);
       } catch (error) {
         console.error("transfer count skipped", address, error.message);
       }
+      const recentSwaps = records.reduce((sum, record) => sum + (Number(record.txns24h) || 0), 0);
+      const txnsTotal = largestCount(indexedTotal, recentSwaps, existing.txns_total);
       if (!winner) {
         const status = classify(null, previousPeak, threshold);
         updateTokenMarket(address, {

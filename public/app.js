@@ -648,7 +648,7 @@ function displayTokenRows() {
         mcap: numberOrNull(pair.market_cap),
         change: numberOrNull(pair.price_change_24h),
         tx24h: numberOrNull(pair.txns_24h),
-        txTotal: numberOrNull(token.txns_total),
+        txTotal: countedTx(token),
         payments: token.payments || [],
         paid: (token.payments || []).reduce((latest, payment) => Math.max(latest, Number(payment.paid_at) || 0), 0) || null,
         pairAddress: pair.pair_address || token.pair_address || "",
@@ -684,6 +684,13 @@ function numberOrNull(value) {
   if (value == null || value === "") return null;
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
+}
+
+function countedTx(token) {
+  const pairs = token.pairs || [];
+  const recent = pairs.reduce((sum, pair) => sum + (Number(pair.txns_24h) || 0), 0);
+  const total = Math.max(Number(token.txns_total) || 0, Number(token.txns_24h) || 0, recent);
+  return total > 0 ? total : null;
 }
 
 function sortValue(row, key) {
