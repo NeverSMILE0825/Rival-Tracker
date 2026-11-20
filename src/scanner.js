@@ -8,13 +8,14 @@ import {
   hasEvent,
   listCompetitors,
   listFundingsForDeployer,
-  listHotDeployers,
+  listLiveDeployers,
   markDeployer,
   queuedDeployers,
   pruneLargeFundings,
   purgeCompetitorResults,
   recordFunding,
   resetCursor,
+  saveSettings,
   setBackfill,
   setHistoryFrom,
   setInternalBackfill,
@@ -30,6 +31,7 @@ import {
   getBalance,
   getReceipt,
   headBlock,
+  inLiveLane,
   internalTransfers,
   transactionCounts,
   internalTxs,
@@ -1170,17 +1172,22 @@ export async function refreshOne(address) {
   return tokens;
 }
 
-const LIVE_TAIL_MS = 8_000;
-const liveFrom = new Map();
+const LIVE_TAIL_MS = 2_000;
+const TIP_BLOCKS = 25;
+const NONCE_CHUNK = 60;
+const INSPECT_LIMIT = 4;
 const liveNonces = new Map();
+const liveRetryAt = new Map();
 const liveInFlight = new Set();
 const seenLiveTx = new Set();
 let liveTailStarted = false;
-let hotCursor = 0;
+let inspecting = 0;
+let backlogInspects = 0;
+let nonceCursor = 0;
 
-async function pageWindow(loadPage) {
+async function pageWindow(loadPage, maxPages = 5) {
   const rows = [];
-  for (let page = 1; page <= 3; page += 1) {
+  for (let page = 1; page <= maxPages; page += 1) {
     const batch = await loadPage(page);
     rows.push(...batch);
     if (batch.length < 100) break;
@@ -1188,47 +1195,80 @@ async function pageWindow(loadPage) {
   return rows;
 }
 
-async function inspectFresh(address, settings) {
-  if (liveInFlight.has(address)) return;
-  liveInFlight.add(address);
-  try {
-    const tokens = await inspectDeployer(address, settings);
-    if (tokens.length) await refreshMarkets(tokens);
-  } catch (error) {
-    console.error("live wallet", address, error.message);
-  } finally {
-    liveInFlight.delete(address);
-  }
+function highestBlock(rows) {
+  let block = 0;
+  for (const tx of rows) block = Math.max(block, Number(tx.blockNumber) || 0);
+  return block;
 }
 
-async function watchHotWallets(settings) {
-  const rows = listHotDeployers(24 * 3600, 400);
+function queueInspect(address, settings, nonce, liveChange) {
+  const key = String(address || "").toLowerCase();
+  if (!key || liveInFlight.has(key)) return false;
+  if (liveChange) {
+    if (inspecting >= INSPECT_LIMIT) return false;
+  } else if (backlogInspects >= 1 || inspecting >= INSPECT_LIMIT) {
+    return false;
+  }
+  inspecting += 1;
+  if (!liveChange) backlogInspects += 1;
+  liveInFlight.add(key);
+  inspectDeployer(key, settings)
+    .then(async (tokens) => {
+      if (nonce != null) liveNonces.set(key, nonce);
+      if (tokens?.length) await refreshMarkets(tokens);
+    })
+    .catch((error) => {
+      console.error("live wallet", key, error.message);
+      liveRetryAt.set(key, Date.now() + 30_000);
+    })
+    .finally(() => {
+      inspecting -= 1;
+      if (!liveChange) backlogInspects -= 1;
+      liveInFlight.delete(key);
+    });
+  return true;
+}
+
+async function watchWaitingWallets(settings) {
+  const rows = listLiveDeployers();
   if (!rows.length) return;
-  const slice = [];
-  for (let index = 0; index < Math.min(50, rows.length); index += 1) {
-    slice.push(rows[(hotCursor + index) % rows.length]);
-  }
-  hotCursor = (hotCursor + slice.length) % rows.length;
-  let counts;
-  try {
-    counts = await transactionCounts(slice.map((row) => row.address));
-  } catch (error) {
-    console.error("live nonce", error.message);
-    return;
-  }
-  for (const row of slice) {
-    const address = row.address.toLowerCase();
-    const nonce = counts.get(address);
-    if (nonce == null) continue;
-    const previous = liveNonces.get(address);
-    liveNonces.set(address, nonce);
-    const known = Number(row.tx_count) || 0;
-    if (previous == null) {
-      if (known > 0 && nonce > known) await inspectFresh(address, settings);
+  const started = Date.now();
+  let scanned = 0;
+  while (scanned < rows.length && Date.now() - started < 35_000) {
+    if (getSettings().live !== "1") return;
+    const start = nonceCursor % rows.length;
+    const part = [];
+    for (let index = 0; index < NONCE_CHUNK && scanned < rows.length; index += 1) {
+      part.push(rows[(start + index) % rows.length]);
+      scanned += 1;
+    }
+    nonceCursor = (start + part.length) % rows.length;
+    let counts;
+    try {
+      counts = await transactionCounts(part.map((row) => row.address));
+    } catch (error) {
+      console.error("live nonce", error.message);
       continue;
     }
-    if (nonce === previous) continue;
-    await inspectFresh(address, settings);
+    for (const row of part) {
+      const address = row.address.toLowerCase();
+      const nonce = counts.get(address);
+      if (nonce == null) continue;
+      const previous = liveNonces.get(address);
+      const known = Number(row.tx_count) || 0;
+      if (previous == null) {
+        const gap = nonce - known;
+        const recent = Number(row.first_funded_at) > nowSec() - 36 * 3600;
+        if (gap > 0 && (recent || gap <= 2) && (liveRetryAt.get(address) || 0) <= Date.now()) {
+          if (!queueInspect(address, settings, nonce, true)) continue;
+        } else {
+          liveNonces.set(address, nonce);
+        }
+        continue;
+      }
+      if (nonce > previous && (liveRetryAt.get(address) || 0) <= Date.now()) queueInspect(address, settings, nonce, true);
+      else liveNonces.set(address, nonce);
+    }
   }
 }
 
@@ -1236,56 +1276,66 @@ async function liveTailOnce() {
   const settings = getSettings();
   if (settings.live !== "1") return;
   const head = await headBlock();
+  const saved = Number(settings.liveSeenBlock) || 0;
+  const from = saved > 0 ? Math.max(1, saved - 2) : Math.max(1, head - 30);
+  const to = Math.min(head, from + TIP_BLOCKS - 1);
   const minWei = ethToWei(settings.minFundingEth || "0.01");
   const maxWei = ethToWei(settings.maxFundingEth || "20");
   const rivals = listCompetitors().filter((competitor) => competitor.enabled);
-  for (const rival of rivals) {
-    if (getSettings().live !== "1") return;
-    const from = liveFrom.get(rival.id) ?? Math.max(1, head - 20);
-    if (from > head) continue;
-    try {
-      const normal = await pageWindow((page) => normalTxs(rival.address, from, page, 100, head));
-      for (const tx of normal) {
-        if (!tx.hash || seenLiveTx.has(tx.hash)) continue;
-        seenLiveTx.add(tx.hash);
-        try {
-          await handleCompetitorTx(rival, tx, minWei, maxWei);
-        } catch (error) {
-          console.error("live tx", error.message);
+  let failed = false;
+  let coveredTo = to;
+  if (from <= to) {
+    for (const rival of rivals) {
+      if (getSettings().live !== "1") return;
+      try {
+        const normal = await pageWindow((page) => normalTxs(rival.address, from, page, 100, to), 8);
+        for (const tx of normal) {
+          if (!tx.hash || seenLiveTx.has(tx.hash)) continue;
+          seenLiveTx.add(tx.hash);
+          try {
+            await handleCompetitorTx(rival, tx, minWei, maxWei);
+          } catch (error) {
+            console.error("live tx", error.message);
+          }
         }
-      }
-      const internal = await pageWindow((page) => internalTxs(rival.address, from, page, 100, head));
-      for (const tx of internal) {
-        const key = `i:${tx.hash}:${tx.to}`;
-        if (seenLiveTx.has(key)) continue;
-        seenLiveTx.add(key);
-        recordOutgoingInternal(rival, tx, minWei, maxWei);
-      }
-      if (seenLiveTx.size > 8000) {
-        for (const key of seenLiveTx) {
-          seenLiveTx.delete(key);
-          if (seenLiveTx.size <= 4000) break;
+        const internal = await pageWindow((page) => internalTxs(rival.address, from, page, 100, to), 8);
+        for (const tx of internal) {
+          const key = `i:${tx.hash}:${tx.to}`;
+          if (seenLiveTx.has(key)) continue;
+          seenLiveTx.add(key);
+          recordOutgoingInternal(rival, tx, minWei, maxWei);
         }
+        if (normal.length >= 800) coveredTo = Math.min(coveredTo, Math.max(from + 1, highestBlock(normal) || from));
+        if (internal.length >= 800) coveredTo = Math.min(coveredTo, Math.max(from + 1, highestBlock(internal) || from));
+        const fresh = queuedDeployers(rival.id, 20).filter((deployer) => Number(deployer.first_funded_at) > nowSec() - 20 * 60);
+        for (const deployer of fresh) queueInspect(deployer.address, settings, null, true);
+      } catch (error) {
+        failed = true;
+        console.error("live tip", rival.label, error.message);
       }
-      liveFrom.set(rival.id, Math.max(1, head - 2));
-    } catch (error) {
-      console.error("live tip", rival.label, error.message);
-      continue;
     }
-    const fresh = queuedDeployers(rival.id, 20).filter((deployer) => Number(deployer.first_funded_at) > nowSec() - 20 * 60);
-    for (const deployer of fresh) await inspectFresh(deployer.address, settings);
   }
-  await watchHotWallets(settings);
+  if (seenLiveTx.size > 8000) {
+    for (const key of seenLiveTx) {
+      seenLiveTx.delete(key);
+      if (seenLiveTx.size <= 4000) break;
+    }
+  }
+  if (!failed && to > 0) {
+    const next = coveredTo >= head ? Math.max(1, head - 2) : Math.max(from, coveredTo);
+    saveSettings({ liveSeenBlock: String(next) });
+  }
+  await watchWaitingWallets(settings);
 }
 
 export function startLiveTail() {
   if (liveTailStarted) return;
   liveTailStarted = true;
   const loop = async () => {
-    console.log("Live launch watch is checking the chain tip every 8 seconds");
+    console.log("Live launch watch is checking new launches every few seconds");
     while (getSettings().live === "1") {
       try {
-        await liveTailOnce();
+        await inLiveLane(() => liveTailOnce());
       } catch (error) {
         console.error("live tail", error.message);
       }

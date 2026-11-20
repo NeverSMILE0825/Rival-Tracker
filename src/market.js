@@ -54,10 +54,10 @@ function pairRecord(pair, threshold) {
   };
 }
 
-async function fetchTokenPairs(address) {
+async function fetchTokenPairs(address, timeout = 20000, attempts = 3) {
   const url = `https://api.dexscreener.com/token-pairs/v1/ethereum/${address}`;
-  for (let attempt = 1; attempt <= 3; attempt += 1) {
-    const response = await fetch(url, { signal: AbortSignal.timeout(20000) });
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    const response = await fetch(url, { signal: AbortSignal.timeout(timeout) });
     if (response.status === 429) {
       await sleep(500 * attempt);
       continue;
@@ -71,10 +71,10 @@ async function fetchTokenPairs(address) {
 }
 
 async function fetchTransferCount(address) {
-  for (let attempt = 1; attempt <= 3; attempt += 1) {
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
     const response = await fetch(`https://eth.blockscout.com/api/v2/tokens/${address}/counters`, {
       headers: { accept: "application/json" },
-      signal: AbortSignal.timeout(20000),
+      signal: AbortSignal.timeout(6000),
     });
     if (response.status === 404) return null;
     if (response.status === 429 || response.status >= 500) {
@@ -112,19 +112,55 @@ function bestPair(pairs) {
   return records[0] || null;
 }
 
+function rememberLaunchMarket(token, pairs) {
+  const existing = getToken(token);
+  if (!existing) return;
+  const threshold = Number(getSettings().rugLiquidityUsd) || 1500;
+  const records = pairs.filter((pair) => pair.pairAddress).map((pair) => pairRecord(pair, threshold));
+  if (!records.length) return;
+  replaceTokenPairs(token, records);
+  const winner = records.reduce((best, record) => {
+    if (!best || record.liquidity > best.liquidity) return record;
+    return best;
+  }, null);
+  const previousPeak = Number(existing.peak_liquidity_usd) || 0;
+  const liquidity = Number(winner.liquidityUsd ?? 0);
+  const recentSwaps = records.reduce((sum, record) => sum + (Number(record.txns24h) || 0), 0);
+  updateTokenMarket(token, {
+    pairAddress: winner.pairAddress || null,
+    dex: winner.dex,
+    priceUsd: winner.priceUsd,
+    liquidityUsd: liquidity,
+    marketCap: winner.marketCap,
+    fdv: winner.fdv,
+    volume24h: winner.volume24h,
+    priceChange24h: winner.priceChange24h,
+    txns24h: winner.txns24h,
+    txnsTotal: largestCount(recentSwaps, existing.txns_total),
+    peakLiquidityUsd: Math.max(previousPeak, liquidity),
+    pairCreatedAt: winner.pairCreatedAt || existing.pair_created_at,
+    status: classify(liquidity, Math.max(previousPeak, liquidity), threshold),
+    dextoolsUrl: winner.dextoolsUrl || dextoolsUrl(winner.pairAddress, token),
+    dexscreenerUrl: winner.dexscreenerUrl || `https://dexscreener.com/ethereum/${token}`,
+  });
+}
+
 export async function lookupLaunchMarket(address) {
   const token = String(address || "").toLowerCase();
+  const deadline = Date.now() + 20_000;
   let pairs = [];
-  for (let attempt = 1; attempt <= 2; attempt += 1) {
+  while (Date.now() < deadline) {
     try {
-      pairs = await fetchTokenPairs(token);
-      if (pairs.length) break;
+      pairs = await fetchTokenPairs(token, 6000, 1);
+      if (bestPair(pairs)) break;
     } catch (error) {
       console.error("launch pair lookup", error.message);
     }
-    if (attempt === 1 && !pairs.length) await sleep(1000);
+    if (Date.now() + 2500 >= deadline) break;
+    await sleep(2500);
   }
   const best = bestPair(pairs);
+  if (best) rememberLaunchMarket(token, pairs);
   const saved = best?.pairAddress ? null : getToken(token);
   const pairAddress = best?.pairAddress || saved?.pair_address || "";
   const header = pairs.map((pair) => pair.info?.header).find((url) => typeof url === "string" && url.startsWith("https://")) || "";

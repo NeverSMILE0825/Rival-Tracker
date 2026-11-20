@@ -12,8 +12,7 @@ export async function notifyLaunch(launch) {
     const since = Number(settings.telegramSince) || 0;
     const launchedAt = Number(launch.launchedAt) || 0;
     if (!since || launchedAt + CLOCK_SKEW_SEC < since) return;
-    const marketPromise = lookupLaunchMarket(launch.address);
-    const market = await Promise.race([marketPromise, sleep(1200).then(() => null)]).catch(() => null);
+    const market = await lookupLaunchMarket(launch.address);
     const links = tokenLinks(launch.address, launch.deployer, market);
     const when = launchedAt || market?.pairCreatedAt || 0;
     const text = caption({
@@ -52,10 +51,22 @@ export async function notifyPaid(payment) {
   if (settings.telegramAlerts !== "1") return false;
   const fundings = listFundingsForDeployer(payment.deployer);
   const rival = fundings[0]?.label || "unknown";
+  let pairAddress = payment.pair_address || "";
+  let dextoolsUrl = payment.dextools_url || "";
+  let dexscreenerUrl = payment.dexscreener_url || "";
+  let looked = null;
+  if (!pairAddress) {
+    looked = await lookupLaunchMarket(payment.token_address);
+    pairAddress = looked?.pairAddress || "";
+    dextoolsUrl = looked?.dextoolsUrl || dextoolsUrl;
+    dexscreenerUrl = looked?.dexscreenerUrl || dexscreenerUrl;
+  }
   const links = tokenLinks(payment.token_address, payment.deployer, {
-    pairAddress: payment.pair_address,
-    dextoolsUrl: payment.dextools_url,
-    dexscreenerUrl: payment.dexscreener_url,
+    pairAddress,
+    dextoolsUrl,
+    dexscreenerUrl,
+    website: looked?.website || "",
+    twitter: looked?.twitter || "",
   });
   const kind = paidKind(payment);
   const when = Number(payment.pair_created_at) || Number(payment.created_at) || Number(payment.paid_at) || 0;
@@ -65,7 +76,15 @@ export async function notifyPaid(payment) {
     detail: payment.detail,
     symbol: payment.symbol,
     name: payment.name,
-    market: payment,
+    market: looked
+      ? {
+          ...payment,
+          marketCap: looked.marketCap ?? payment.market_cap,
+          liquidityUsd: looked.liquidityUsd ?? payment.liquidity_usd,
+          volume24h: looked.volume24h ?? payment.volume_24h,
+          priceChange24h: looked.priceChange24h ?? payment.price_change_24h,
+        }
+      : payment,
     age: ageLabel(when),
     rank: payment.rank,
     rival,
@@ -75,17 +94,17 @@ export async function notifyPaid(payment) {
   const photoBuffer = await cardImage({
     symbol: payment.symbol,
     name: payment.name,
-    bannerUrl: payment.banner_url || "",
+    bannerUrl: looked?.imageUrl || payment.banner_url || "",
     logoUrl: logoUrl(payment.token_address),
-    marketCap: payment.market_cap,
-    liquidityUsd: payment.liquidity_usd,
-    volume24h: payment.volume_24h,
-    priceChange24h: payment.price_change_24h,
+    marketCap: looked?.marketCap ?? payment.market_cap,
+    liquidityUsd: looked?.liquidityUsd ?? payment.liquidity_usd,
+    volume24h: looked?.volume24h ?? payment.volume_24h,
+    priceChange24h: looked?.priceChange24h ?? payment.price_change_24h,
     ageLabel: ageLabel(when),
     createdLabel: stamp(when, settings),
     rank: payment.rank,
   });
-  await sendTelegram(text, { photo: payment.banner_url || "", photoBuffer, buttons: linkButtons(links) });
+  await sendTelegram(text, { photo: looked?.imageUrl || payment.banner_url || "", photoBuffer, buttons: linkButtons(links) });
   return true;
 }
 
@@ -278,9 +297,11 @@ function sampleButtons() {
 function tokenLinks(address, creator, market = {}) {
   market = market || {};
   const token = String(address || "").toLowerCase();
-  const pair = String(market.pairAddress || "");
-  const dextools = market.dextoolsUrl
-    || (pair ? `https://www.dextools.io/app/ether/pair-explorer/${pair}` : `https://www.dextools.io/app/ether/token/${token}`);
+  const pair = String(market.pairAddress || "").trim();
+  const fullPair = /^0x[a-fA-F0-9]{40}$/.test(pair) || /^0x[a-fA-F0-9]{64}$/.test(pair);
+  const dextools = fullPair
+    ? `https://www.dextools.io/app/ether/pair-explorer/${pair}`
+    : market.dextoolsUrl || (token ? `https://www.dextools.io/app/ether/token/${token}` : "");
   return {
     dexscreener: market.dexscreenerUrl || `https://dexscreener.com/ethereum/${token}`,
     dextools,

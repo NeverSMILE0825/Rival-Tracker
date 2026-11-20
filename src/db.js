@@ -149,6 +149,7 @@ const DEFAULTS = {
   telegramSince: "",
   telegramUpdateOffset: "0",
   paidBaseline: "",
+  liveSeenBlock: "",
 };
 
 const SEED = [
@@ -465,6 +466,17 @@ export function countQueued(competitorId) {
       )
       .get(competitorId).n,
   );
+}
+
+export function listLiveDeployers() {
+  return db
+    .prepare(
+      `SELECT address, status, first_funded_at, tx_count
+       FROM deployers
+       WHERE status IN ('waiting', 'queued', 'drained')
+       ORDER BY first_funded_at DESC`,
+    )
+    .all();
 }
 
 export function listHotDeployers(seconds, limit) {
@@ -897,6 +909,7 @@ export function snapshot() {
       telegramBotToken: "",
       telegramBotTokenSet: Boolean(settings.telegramBotToken),
       telegramUpdateOffset: undefined,
+      liveSeenBlock: undefined,
     },
     telegramChats: listTelegramChats().map((chat) => ({
       name: chat.name || chat.username || "Teammate",

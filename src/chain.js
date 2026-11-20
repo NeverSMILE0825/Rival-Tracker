@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { getSettings } from "./db.js";
 import { decodeAbiString, isRetryableMessage, parseApiKeys, sleep } from "./util.js";
 
@@ -7,10 +8,17 @@ const ETHERSCAN = "https://api.etherscan.io/v2/api";
 const TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
 const ZERO_TOPIC = `0x${"0".repeat(64)}`;
 
-let explorerChain = Promise.resolve();
-let explorerNext = 0;
+const explorerLane = new AsyncLocalStorage();
+const explorerLanes = {
+  history: { chain: Promise.resolve(), next: 0 },
+  live: { chain: Promise.resolve(), next: 0 },
+};
 let rpcCursor = 0;
 let keyCursor = 0;
+
+export function inLiveLane(fn) {
+  return explorerLane.run("live", fn);
+}
 
 function etherscanKeys() {
   return parseApiKeys(getSettings().etherscanApiKey);
@@ -44,12 +52,13 @@ function explorerGap() {
 
 async function paceExplorer() {
   const gap = explorerGap();
-  const run = explorerChain.then(async () => {
-    const wait = Math.max(0, explorerNext - Date.now());
+  const lane = explorerLanes[explorerLane.getStore()] || explorerLanes.history;
+  const run = lane.chain.then(async () => {
+    const wait = Math.max(0, lane.next - Date.now());
     if (wait) await sleep(wait);
-    explorerNext = Date.now() + gap;
+    lane.next = Date.now() + gap;
   });
-  explorerChain = run.then(
+  lane.chain = run.then(
     () => {},
     () => {},
   );

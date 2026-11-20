@@ -1,3 +1,4 @@
+import https from "node:https";
 import {
   getSettings,
   listPaidBannerTargets,
@@ -26,6 +27,7 @@ let recentCache = { at: 0, rows: [] };
 let olderCache = { at: 0, rows: [] };
 let lastSocial = 0;
 let lastBanner = 0;
+let lastRace = 0;
 const bannerMiss = new Map();
 let started = false;
 
@@ -39,6 +41,7 @@ export function startPaidWatch() {
   if (started) return;
   started = true;
   alertLoop();
+  feedLoop();
   maintenanceLoop();
 }
 
@@ -122,14 +125,15 @@ async function syncOrders(address, baseline) {
   let response;
   try {
     response = await fetch(`https://api.dexscreener.com/orders/v1/ethereum/${address}`, {
-      signal: AbortSignal.timeout(15000),
+      signal: AbortSignal.timeout(8000),
     });
   } catch (error) {
     console.error("paid orders", error.message);
+    setTimeout(() => watchPaid(address), 10_000);
     return;
   }
   if (response.status === 429) {
-    await sleep(5000);
+    setTimeout(() => watchPaid(address), 10_000);
     return;
   }
   if (!response.ok) return;
@@ -171,50 +175,83 @@ async function syncOrders(address, baseline) {
   }
 }
 
-async function syncRace(baseline) {
+function fetchDextools(url, version) {
+  return new Promise((resolve, reject) => {
+    const request = https.get(
+      url,
+      {
+        headers: {
+          accept: "application/json",
+          "accept-encoding": "identity",
+          "X-API-Version": version,
+          connection: "close",
+        },
+        timeout: 12000,
+      },
+      (response) => {
+        const chunks = [];
+        response.on("data", (chunk) => chunks.push(chunk));
+        response.on("end", () => {
+          const text = Buffer.concat(chunks).toString("utf8");
+          resolve({
+            ok: response.statusCode >= 200 && response.statusCode < 300,
+            statusCode: response.statusCode,
+            json: async () => JSON.parse(text),
+          });
+        });
+      },
+    );
+    request.on("timeout", () => request.destroy(new Error("The operation was aborted due to timeout")));
+    request.on("error", reject);
+  });
+}
+
+async function syncRacePage(baseline, page) {
   const known = new Set(listTokenAddresses());
-  if (!known.size) return;
+  if (!known.size) return null;
+  let response;
+  try {
+    response = await fetchDextools(
+      `https://www.dextools.io/api/core/pool/listing/token-race?chains=ether&page=${page}&pageSize=100&lite=false`,
+      "2",
+    );
+  } catch (error) {
+    console.error("paid nitro", error.message);
+    return null;
+  }
+  if (!response.ok) return null;
+  const payload = await response.json().catch(() => ({}));
+  const data = payload.data || {};
+  const results = Array.isArray(data.results) ? data.results : [];
+  for (const row of results) {
+    const address = String(row.mainToken?.address || "").toLowerCase();
+    if (!known.has(address)) continue;
+    const nitro = row.nitro || {};
+    const total = Number(nitro.total) || 0;
+    if (!total) continue;
+    const paidAt = unixTime(Date.parse(nitro.lastNitro || ""));
+    if (!paidAt) continue;
+    savePaid({
+      fingerprint: `dextools|nitro|${address}`,
+      tokenAddress: address,
+      source: "dextools",
+      kind: "nitro",
+      amount: total,
+      paidAt,
+      detail: nitroDetail(nitro),
+      baseline,
+    });
+  }
+  return { totalPages: Number(data.totalPages) || 1, count: results.length };
+}
+
+async function syncRace(baseline, maxPages = 4) {
   let page = 0;
   let totalPages = 1;
-  while (page < totalPages && page < 10) {
-    let response;
-    try {
-      response = await fetch(
-        `https://www.dextools.io/api/core/pool/listing/token-race?chains=ether&page=${page}&pageSize=100&lite=false`,
-        {
-          headers: { accept: "application/json", "X-API-Version": "2" },
-          signal: AbortSignal.timeout(20000),
-        },
-      );
-    } catch (error) {
-      console.error("paid nitro", error.message);
-      return;
-    }
-    if (!response.ok) return;
-    const payload = await response.json().catch(() => ({}));
-    const data = payload.data || {};
-    totalPages = Number(data.totalPages) || 1;
-    const results = Array.isArray(data.results) ? data.results : [];
-    for (const row of results) {
-      const address = String(row.mainToken?.address || "").toLowerCase();
-      if (!known.has(address)) continue;
-      const nitro = row.nitro || {};
-      const total = Number(nitro.total) || 0;
-      if (!total) continue;
-      const paidAt = unixTime(Date.parse(nitro.lastNitro || ""));
-      if (!paidAt) continue;
-      savePaid({
-        fingerprint: `dextools|nitro|${address}`,
-        tokenAddress: address,
-        source: "dextools",
-        kind: "nitro",
-        amount: total,
-        paidAt,
-        detail: nitroDetail(nitro),
-        baseline,
-      });
-    }
-    if (!results.length) break;
+  while (page < totalPages && page < maxPages) {
+    const result = await syncRacePage(baseline, page);
+    if (!result || !result.count) break;
+    totalPages = result.totalPages;
     page += 1;
   }
 }
@@ -288,10 +325,10 @@ async function syncFastFeeds(baseline) {
   const known = new Set(listTokenAddresses());
   if (!known.size) return;
   const hits = new Set();
-  await Promise.all(
+  const dexFeeds = Promise.all(
     DEX_FEEDS.map(async (url) => {
       try {
-        const response = await fetch(url, { signal: AbortSignal.timeout(10000) });
+        const response = await fetch(url, { signal: AbortSignal.timeout(8000) });
         if (!response.ok) return;
         const payload = await response.json().catch(() => []);
         const rows = Array.isArray(payload) ? payload : [];
@@ -305,12 +342,11 @@ async function syncFastFeeds(baseline) {
       }
     }),
   );
-  for (const address of hits) {
-    await syncOrders(address, baseline);
-    await flushAlerts();
-  }
-  await syncRace(baseline);
-  await syncSocialPage(baseline, 0);
+  const dextoolsFeeds = Promise.all([syncRacePage(baseline, 0), syncSocialPage(baseline, 0)]);
+  await dexFeeds;
+  for (const address of hits) await syncOrders(address, baseline);
+  await flushAlerts();
+  await dextoolsFeeds;
   await flushAlerts();
 }
 
@@ -319,12 +355,9 @@ async function syncSocialPage(baseline, page) {
   if (!known.size) return false;
   let response;
   try {
-    response = await fetch(
+    response = await fetchDextools(
       `https://www.dextools.io/api/core/token/listings/social-network-updates/list?limit=50&chain=ether&page=${page}`,
-      {
-        headers: { accept: "application/json", "X-API-Version": "1" },
-        signal: AbortSignal.timeout(12000),
-      },
+      "1",
     );
   } catch (error) {
     console.error("paid dextools info", error.message);
@@ -360,7 +393,18 @@ async function syncSocials(baseline) {
   }
 }
 
-async function flushAlerts() {
+let flushChain = Promise.resolve();
+
+function flushAlerts() {
+  const run = flushChain.then(() => deliverAlerts());
+  flushChain = run.then(
+    () => {},
+    () => {},
+  );
+  return run;
+}
+
+async function deliverAlerts() {
   const rows = listUnalertedPaid();
   for (const row of rows) {
     try {
@@ -372,17 +416,25 @@ async function flushAlerts() {
   }
 }
 
-async function alertLoop() {
+async function feedLoop() {
   const baseline = ensureBaseline();
-  let lastFeed = 0;
   console.log("Paid alerts are checking Dexscreener and Dextools every 8 seconds");
   while (true) {
     const started = Date.now();
     try {
-      if (started - lastFeed >= FEED_GAP_MS) {
-        await syncFastFeeds(baseline);
-        lastFeed = Date.now();
-      }
+      await syncFastFeeds(baseline);
+    } catch (error) {
+      console.error("paid feed", error.message);
+    }
+    await sleep(Math.max(1000, FEED_GAP_MS - (Date.now() - started)));
+  }
+}
+
+async function alertLoop() {
+  const baseline = ensureBaseline();
+  while (true) {
+    const started = Date.now();
+    try {
       const address = nextAlertAddress();
       if (address) await syncOrders(address, baseline);
       await flushAlerts();
@@ -398,9 +450,15 @@ async function maintenanceLoop() {
   const baseline = ensureBaseline();
   while (true) {
     try {
+      if (Date.now() - lastRace > 45_000) {
+        await syncRace(baseline, 4);
+        lastRace = Date.now();
+        await flushAlerts();
+      }
       if (Date.now() - lastSocial > SOCIAL_GAP_MS) {
         await syncSocials(baseline);
         lastSocial = Date.now();
+        await flushAlerts();
       }
       if (Date.now() - lastBanner > BANNER_GAP_MS) {
         await syncBanners();
