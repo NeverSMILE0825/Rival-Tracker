@@ -474,7 +474,7 @@ function viewTokens() {
         { label: "24h", key: "change", type: "number" },
         { label: "Total tx", key: "txTotal", type: "number" },
         { label: "24h tx", key: "tx24h", type: "number" },
-        { label: "Paid", key: "paid", type: "number" },
+        { label: "Paid Status", key: "paid", type: "number" },
         { label: "" },
       ],
       displayTokenRows(),
@@ -546,22 +546,28 @@ function tokenBanner(token) {
   </div>`;
 }
 
-function latestPayments(payments) {
-  const best = new Map();
-  for (const payment of payments || []) {
-    const key = `${payment.source}|${payment.kind}`;
-    const current = best.get(key);
-    if (!current || Number(payment.paid_at) > Number(current.paid_at)) best.set(key, payment);
-  }
-  return [...best.values()];
+function paidBadge(payment) {
+  const kind = String(payment.kind || "");
+  if (payment.source === "dextools" && kind === "nitro") return { label: "nitro", tone: "nitro" };
+  if (payment.source === "dextools") return { label: "Dextools", tone: "thin" };
+  if (kind === "boost") return { label: "boost", tone: "boost" };
+  return { label: "Dexscreener", tone: "live" };
 }
 
 function paidCell(payments, compact = false) {
-  const rows = [...(compact ? latestPayments(payments) : payments || [])].sort(
-    (a, b) => (Number(b.paid_at) || 0) - (Number(a.paid_at) || 0),
-  );
+  const rows = [...(payments || [])].sort((a, b) => (Number(b.paid_at) || 0) - (Number(a.paid_at) || 0));
   if (!rows.length) return `<span class="muted">—</span>`;
-  return `<div class="paid-list${compact ? " compact" : ""}">${rows
+  if (compact) {
+    const order = ["Dexscreener", "Dextools", "boost", "nitro"];
+    const seen = new Map();
+    for (const payment of rows) {
+      const badge = paidBadge(payment);
+      if (!seen.has(badge.label)) seen.set(badge.label, badge);
+    }
+    const badges = order.filter((label) => seen.has(label)).map((label) => seen.get(label));
+    return `<div class="paid-badges">${badges.map((badge) => `<span class="pill ${badge.tone}">${badge.label}</span>`).join("")}</div>`;
+  }
+  return `<div class="paid-list">${rows
     .map((payment) => {
       const source = payment.source === "dextools" ? "Dextools" : "Dexscreener";
       const tone = payment.source === "dextools" ? "thin" : "live";
