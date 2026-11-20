@@ -1,4 +1,4 @@
-import { getSettings } from "./db.js";
+import { getSettings, listFundingsForDeployer } from "./db.js";
 import { lookupLaunchMarket } from "./market.js";
 import { formatKst, timezoneLabel } from "./util.js";
 
@@ -27,6 +27,32 @@ export async function notifyLaunch(launch) {
   } catch (error) {
     console.error("telegram", error.message);
   }
+}
+
+export async function notifyPaid(payment) {
+  const settings = getSettings();
+  if (settings.telegramAlerts !== "1") return false;
+  const fundings = listFundingsForDeployer(payment.deployer);
+  const rival = fundings[0]?.label || "unknown";
+  const zone = timezoneLabel(settings.timezoneOffset);
+  const title = payment.name ? `${payment.symbol} (${payment.name})` : payment.symbol || "token";
+  const source = payment.source === "dextools" ? "Dextools" : "Dexscreener";
+  const pair = payment.pair_address || "";
+  const dextools = pair
+    ? `https://www.dextools.io/app/ether/pair-explorer/${pair}`
+    : payment.dextools_url || `https://www.dextools.io/app/ether/token/${payment.token_address}`;
+  const dexscreener = payment.dexscreener_url || `https://dexscreener.com/ethereum/${payment.token_address}`;
+  const text = [
+    `Paid · ${title}`,
+    `${source} · ${payment.detail}`,
+    `Paid: ${formatKst(payment.paid_at, settings.timezoneOffset)} ${zone}`,
+    `Rival: ${rival}`,
+    `Token: ${payment.token_address}`,
+    dextools,
+    dexscreener,
+  ].join("\n");
+  await sendTelegram(text, { photo: payment.logo_url || "" });
+  return true;
 }
 
 export async function sendTelegram(text, override = {}) {

@@ -38,6 +38,7 @@ import {
   readTokenMeta,
 } from "./chain.js";
 import { refreshMarkets } from "./market.js";
+import { watchPaid } from "./paid.js";
 import { notifyLaunch } from "./telegram.js";
 import { ethToWei, formatEth, formatKst, normalizeAddress, sleep, timezoneLabel, zonedUnix } from "./util.js";
 
@@ -862,6 +863,7 @@ async function saveMints(competitor, tx, receipt) {
         rival: competitor.label,
         launchedAt: Number(tx.timeStamp),
       });
+      watchPaid(token.address);
       created.push(token.address);
     }
   }
@@ -1035,6 +1037,7 @@ async function inspectDeployer(address, settings) {
             rival: rival.label,
             launchedAt: Number(tx.timeStamp),
           });
+          watchPaid(token.address);
           found.push(token.address);
         }
       }

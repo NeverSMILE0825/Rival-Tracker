@@ -153,6 +153,12 @@ th .sort {
 th .sort span { font-size: 10px; }
 th .sort.on { color: var(--text); }
 .token-cell .muted { margin-left: 4px; }
+.token-id { display: flex; align-items: center; gap: 8px; }
+.token-logo { width: 28px; height: 28px; border-radius: 50%; object-fit: cover; background: #222; flex: none; }
+.token-logo.empty { display: inline-block; }
+td.paid-cell { white-space: normal; min-width: 220px; }
+.paid-list { display: flex; flex-direction: column; gap: 4px; }
+.paid-item { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; font-size: 12px; }
 .exch {
   display: inline-flex; margin-left: 8px; padding: 1px 7px; border-radius: 999px;
   background: rgba(158, 191, 255, 0.16); color: var(--blue); font-size: 11px; font-weight: 700;

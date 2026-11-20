@@ -1,4 +1,4 @@
-import { getSettings, getToken, listTokenAddresses, replaceTokenPairs, updateTokenMarket } from "./db.js";
+import { getSettings, getToken, listTokenAddresses, replaceTokenPairs, setTokenLogo, updateTokenMarket } from "./db.js";
 import { sleep } from "./util.js";
 
 function classify(liquidity, peak, threshold) {
@@ -194,13 +194,18 @@ async function refreshMarketsNow(addresses) {
       continue;
     }
     const grouped = new Map();
+    const images = new Map();
     for (const pair of pairs) {
       const token = pair.baseToken?.address?.toLowerCase();
-      if (!token || !chunk.includes(token) || !pair.pairAddress) continue;
+      if (!token || !chunk.includes(token)) continue;
+      const image = pair.info?.imageUrl;
+      if (typeof image === "string" && image.startsWith("https://")) images.set(token, image);
+      if (!pair.pairAddress) continue;
       const list = grouped.get(token) || [];
       list.push(pairRecord(pair, threshold));
       grouped.set(token, list);
     }
+    for (const [token, image] of images) setTokenLogo(token, image);
     for (const address of chunk) {
       const existing = getToken(address);
       if (!existing) continue;

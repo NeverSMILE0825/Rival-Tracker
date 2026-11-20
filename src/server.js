@@ -16,6 +16,7 @@ import {
   updateCompetitor,
 } from "./db.js";
 import { refreshMarkets, startLiveMarkets } from "./market.js";
+import { startPaidWatch } from "./paid.js";
 import { autoScanTick, cachedScanRange, decorateScan, enqueueScan, getJob, refreshOne, stopScan, warmScanRange } from "./scanner.js";
 import { headBlock } from "./chain.js";
 import { sendTelegram } from "./telegram.js";
@@ -334,6 +335,7 @@ app.use("/api", (_req, res) => {
 const port = Number(process.env.PORT) || 4177;
 app.listen(port, "127.0.0.1", () => {
   console.log(`Rival Tracker running at http://127.0.0.1:${port}`);
+  startPaidWatch();
   warmScanRange().catch((error) => console.error("scan range", error.message));
   if (getSettings().live === "1") {
     const ids = listCompetitors()

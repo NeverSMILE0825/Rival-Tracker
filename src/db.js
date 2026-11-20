@@ -147,6 +147,7 @@ const DEFAULTS = {
   telegramChatId: "",
   telegramAlerts: "0",
   telegramSince: "",
+  paidBaseline: "",
 };
 
 const SEED = [
@@ -289,6 +290,25 @@ const tokenColumns = db.prepare("PRAGMA table_info(tokens)").all();
 if (!tokenColumns.some((column) => column.name === "txns_total")) {
   db.exec("ALTER TABLE tokens ADD COLUMN txns_total INTEGER");
 }
+if (!tokenColumns.some((column) => column.name === "logo_url")) {
+  db.exec("ALTER TABLE tokens ADD COLUMN logo_url TEXT");
+}
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS token_paid (
+    fingerprint TEXT PRIMARY KEY,
+    token_address TEXT NOT NULL,
+    source TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    amount INTEGER,
+    paid_at INTEGER,
+    detail TEXT NOT NULL,
+    alerted INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_token_paid_token ON token_paid(token_address);
+  CREATE INDEX IF NOT EXISTS idx_token_paid_alerted ON token_paid(alerted);
+`);
 
 export function resetCursor(id) {
   db.prepare(
@@ -506,6 +526,76 @@ export function getToken(address) {
   return db.prepare("SELECT * FROM tokens WHERE address = ?").get(address);
 }
 
+export function setTokenLogo(address, url) {
+  const logo = String(url || "").trim();
+  if (!logo.startsWith("https://")) return;
+  const current = db.prepare("SELECT logo_url FROM tokens WHERE address = ?").get(String(address).toLowerCase());
+  if (!current) return;
+  const existing = current.logo_url || "";
+  if (existing.includes("cdn.dexscreener.com")) return;
+  if (existing && !logo.includes("cdn.dexscreener.com")) return;
+  if (existing === logo) return;
+  db.prepare("UPDATE tokens SET logo_url = ? WHERE address = ?").run(logo, String(address).toLowerCase());
+}
+
+export function savePaid(event) {
+  const paidAt = Number(event.paidAt) || 0;
+  const amount = event.amount == null ? null : Number(event.amount);
+  const silent = paidAt > 0 && paidAt < Number(event.baseline);
+  const existing = db
+    .prepare("SELECT paid_at, detail, amount, alerted FROM token_paid WHERE fingerprint = ?")
+    .get(event.fingerprint);
+  if (!existing) {
+    const result = db
+      .prepare(
+        `INSERT OR IGNORE INTO token_paid(
+           fingerprint, token_address, source, kind, amount, paid_at, detail, alerted, created_at
+         ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        event.fingerprint,
+        String(event.tokenAddress).toLowerCase(),
+        event.source,
+        event.kind,
+        amount,
+        paidAt || null,
+        event.detail,
+        silent ? 1 : 0,
+        nowSec(),
+      );
+    return Number(result.changes) > 0 && !silent;
+  }
+  const same =
+    Number(existing.paid_at) === paidAt &&
+    existing.detail === event.detail &&
+    Number(existing.amount || 0) === Number(amount || 0);
+  if (same) return false;
+  db.prepare("UPDATE token_paid SET amount = ?, paid_at = ?, detail = ?, alerted = ? WHERE fingerprint = ?").run(
+    amount,
+    paidAt || null,
+    event.detail,
+    silent ? existing.alerted : 0,
+    event.fingerprint,
+  );
+  return !silent;
+}
+
+export function listUnalertedPaid() {
+  return db
+    .prepare(
+      `SELECT p.fingerprint, p.token_address, p.source, p.kind, p.amount, p.paid_at, p.detail,
+              t.symbol, t.name, t.deployer, t.pair_address, t.dextools_url, t.dexscreener_url, t.logo_url
+       FROM token_paid p JOIN tokens t ON t.address = p.token_address
+       WHERE p.alerted = 0
+       ORDER BY p.paid_at ASC`,
+    )
+    .all();
+}
+
+export function markPaidAlerted(fingerprint) {
+  db.prepare("UPDATE token_paid SET alerted = 1 WHERE fingerprint = ?").run(fingerprint);
+}
+
 export function replaceTokenPairs(tokenAddress, pairs) {
   db.exec("BEGIN");
   try {
@@ -669,6 +759,14 @@ export function snapshot() {
     pairsByToken.set(pair.token_address, list);
   }
 
+  const paidRows = db.prepare("SELECT * FROM token_paid ORDER BY paid_at DESC").all();
+  const paidByToken = new Map();
+  for (const payment of paidRows) {
+    const list = paidByToken.get(payment.token_address) || [];
+    list.push(payment);
+    paidByToken.set(payment.token_address, list);
+  }
+
   const tokens = db
     .prepare("SELECT * FROM tokens ORDER BY COALESCE(pair_created_at, created_at) DESC LIMIT 2000")
     .all()
@@ -676,6 +774,7 @@ export function snapshot() {
       ...token,
       fundings: fundingByDeployer.get(token.deployer) || [],
       pairs: pairsByToken.get(token.address) || [],
+      payments: paidByToken.get(token.address) || [],
     }));
 
   const events = db.prepare("SELECT * FROM events ORDER BY id DESC LIMIT 40").all();

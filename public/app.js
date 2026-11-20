@@ -471,6 +471,7 @@ function viewTokens() {
         { label: "24h", key: "change", type: "number" },
         { label: "Total tx", key: "txTotal", type: "number" },
         { label: "24h tx", key: "tx24h", type: "number" },
+        { label: "Paid", key: "paid", type: "number" },
         { label: "" },
       ],
       displayTokenRows(),
@@ -489,11 +490,28 @@ function dextoolsHref(token) {
   return stored || "#";
 }
 
+function tokenLogo(url) {
+  if (!url) return `<span class="token-logo empty"></span>`;
+  return `<img class="token-logo" src="${esc(url)}" alt="" onerror="this.style.visibility='hidden'" />`;
+}
+
+function paidCell(payments) {
+  const rows = [...(payments || [])].sort((a, b) => (Number(b.paid_at) || 0) - (Number(a.paid_at) || 0));
+  if (!rows.length) return `<span class="muted">—</span>`;
+  return `<div class="paid-list">${rows
+    .map((payment) => {
+      const source = payment.source === "dextools" ? "Dextools" : "Dexscreener";
+      const tone = payment.source === "dextools" ? "thin" : "live";
+      return `<div class="paid-item"><span class="pill ${tone}">${source}</span><span>${esc(payment.detail)}</span><span class="muted">${esc(formatKst(payment.paid_at))}</span></div>`;
+    })
+    .join("")}</div>`;
+}
+
 function tokenRow(token) {
   const exchange = token.label ? `<span class="exch">${esc(token.label)}</span>` : "";
   return `<tr class="clickable" data-act="drawer-token" data-address="${esc(token.address)}">
     <td><span class="pill ${esc(token.status)}">${esc(token.status)}</span></td>
-    <td class="token-cell"><b>${esc(token.symbol)}</b> <span class="muted">(${esc(token.name)})</span>${exchange}</td>
+    <td class="token-cell"><span class="token-id">${tokenLogo(token.logo)}<span><b>${esc(token.symbol)}</b> <span class="muted">(${esc(token.name)})</span>${exchange}</span></span></td>
     <td>${esc(token.rival)}</td>
     <td>${esc(formatKst(token.launched))}</td>
     <td>${esc(formatUsd(token.liquidity))}</td>
@@ -501,6 +519,7 @@ function tokenRow(token) {
     <td>${esc(formatChange(token.change))}</td>
     <td>${esc(formatCount(token.txTotal))}</td>
     <td>${esc(formatCount(token.tx24h))}</td>
+    <td class="paid-cell">${paidCell(token.payments)}</td>
     <td class="links">
       <a href="${esc(dextoolsHref(token))}" target="_blank" rel="noreferrer">Dextools</a>
       <a href="${esc(token.dexscreener_url || `https://dexscreener.com/ethereum/${token.address}`)}" target="_blank" rel="noreferrer">Dex</a>
@@ -542,6 +561,9 @@ function displayTokenRows() {
         change: numberOrNull(pair.price_change_24h),
         tx24h: numberOrNull(pair.txns_24h),
         txTotal: numberOrNull(token.txns_total),
+        logo: token.logo_url || "",
+        payments: token.payments || [],
+        paid: (token.payments || []).reduce((latest, payment) => Math.max(latest, Number(payment.paid_at) || 0), 0) || null,
         pairAddress: pair.pair_address || token.pair_address || "",
         dextools_url: dextoolsHref({
           address: token.address,
@@ -587,6 +609,7 @@ function sortValue(row, key) {
   if (key === "change") return row.change;
   if (key === "txTotal") return row.txTotal;
   if (key === "tx24h") return row.tx24h;
+  if (key === "paid") return row.paid;
   return "";
 }
 
@@ -953,8 +976,9 @@ function paintDrawer() {
     if (!token) return;
     root.innerHTML = `<div class="drawer-back"><aside class="drawer">
       <button class="btn" data-act="close-drawer">Close</button>
-      <h3 style="margin-top:16px">${esc(token.symbol)} <span class="muted">${esc(token.name)}</span></h3>
+      <h3 class="token-id" style="margin-top:16px">${tokenLogo(token.logo_url)}<span>${esc(token.symbol)} <span class="muted">${esc(token.name)}</span></span></h3>
       <div class="kv">
+        <span>Paid</span><div>${paidCell(token.payments)}</div>
         <span>Status</span><div><span class="pill ${esc(token.status)}">${esc(token.status)}</span></div>
         <span>Launched</span><div>${esc(formatKst(launchedAt(token)))} ${zoneLabel()}</div>
         <span>Contract time</span><div>${esc(formatKst(token.created_at))} ${zoneLabel()}</div>
