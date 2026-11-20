@@ -324,6 +324,7 @@ function paintView() {
     state.paidOnly ? "paid" : "any",
     state.sort[state.route]?.key || "",
     state.sort[state.route]?.dir || "",
+    (state.data.telegramChats || []).map((chat) => `${chat.name}:${chat.username || ""}`).join(","),
   ].join("|");
   const y = window.scrollY;
   const previous = view.dataset.key;
@@ -928,6 +929,14 @@ function scanRangeFields() {
     ${whenField("End", "scanEndDate", "scanEnd", { act: "current-time", label: "Current time" })}`;
 }
 
+function telegramAudience() {
+  const chats = state.data.telegramChats || [];
+  if (!chats.length) return "Nobody else has pressed Start yet.";
+  return chats
+    .map((chat) => (chat.username ? `${chat.name} (@${chat.username})` : chat.name))
+    .join(", ");
+}
+
 function viewSettings() {
   const settings = state.data.settings;
   const mode = rangeMode();
@@ -973,6 +982,7 @@ function viewSettings() {
       <div class="field wide">
         <label>Telegram alerts</label>
         <p class="keys-note">Leave Live on in the header so new transactions keep getting read. Alerts cover launches from the moment you turn this on. Older tokens already in the table stay quiet.</p>
+        <p class="keys-note">Anyone who presses Start in the bot gets the same alerts. ${telegramAudience()}</p>
         <p class="keys-note">${settings.telegramBotTokenSet ? "Bot token saved. Paste a new one only if you want to replace it." : "No bot token saved yet."}</p>
         <input name="telegramBotToken" type="password" autocomplete="off" spellcheck="false" placeholder="Bot token from @BotFather" />
         <input name="telegramChatId" autocomplete="off" spellcheck="false" placeholder="Chat id" value="${esc(fieldValue("telegramChatId"))}" />

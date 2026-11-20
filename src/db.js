@@ -147,6 +147,7 @@ const DEFAULTS = {
   telegramChatId: "",
   telegramAlerts: "0",
   telegramSince: "",
+  telegramUpdateOffset: "0",
   paidBaseline: "",
 };
 
@@ -200,6 +201,22 @@ export function saveSettings(partial) {
     update.run(key, String(value));
   }
   return getSettings();
+}
+
+export function saveTelegramChat({ chatId, name, username }) {
+  db.prepare(
+    `INSERT INTO telegram_chats(chat_id, name, username, started_at)
+     VALUES(?, ?, ?, ?)
+     ON CONFLICT(chat_id) DO UPDATE SET name = excluded.name, username = excluded.username`,
+  ).run(String(chatId), String(name || ""), String(username || ""), nowSec());
+}
+
+export function listTelegramChats() {
+  return db.prepare("SELECT chat_id, name, username, started_at FROM telegram_chats ORDER BY started_at").all();
+}
+
+export function removeTelegramChat(chatId) {
+  db.prepare("DELETE FROM telegram_chats WHERE chat_id = ?").run(String(chatId));
 }
 
 export function listCompetitors() {
@@ -301,6 +318,15 @@ const pairColumns = db.prepare("PRAGMA table_info(token_pairs)").all();
 if (!pairColumns.some((column) => column.name === "quote_symbol")) {
   db.exec("ALTER TABLE token_pairs ADD COLUMN quote_symbol TEXT");
 }
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS telegram_chats (
+    chat_id TEXT PRIMARY KEY,
+    name TEXT NOT NULL DEFAULT '',
+    username TEXT NOT NULL DEFAULT '',
+    started_at INTEGER NOT NULL
+  )
+`);
 
 db.exec(`
   UPDATE tokens
@@ -870,7 +896,12 @@ export function snapshot() {
       etherscanApiKeyHint: preview.length ? `${preview.join(", ")}${extra}` : "",
       telegramBotToken: "",
       telegramBotTokenSet: Boolean(settings.telegramBotToken),
+      telegramUpdateOffset: undefined,
     },
+    telegramChats: listTelegramChats().map((chat) => ({
+      name: chat.name || chat.username || "Teammate",
+      username: chat.username,
+    })),
   };
 }
 

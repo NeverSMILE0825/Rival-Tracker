@@ -19,7 +19,7 @@ import { refreshMarkets, startLiveMarkets } from "./market.js";
 import { startPaidWatch } from "./paid.js";
 import { autoScanTick, cachedScanRange, decorateScan, enqueueScan, getJob, refreshOne, startLiveTail, stopScan, warmScanRange } from "./scanner.js";
 import { headBlock } from "./chain.js";
-import { sendTelegram } from "./telegram.js";
+import { sendTelegram, startTelegramInbox } from "./telegram.js";
 import { ethToWei, normalizeAddress, nowSec, parseApiKeys, zonedUnix } from "./util.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -343,6 +343,7 @@ const port = Number(process.env.PORT) || 4177;
 app.listen(port, "127.0.0.1", () => {
   console.log(`Rival Tracker running at http://127.0.0.1:${port}`);
   startPaidWatch();
+  startTelegramInbox();
   warmScanRange().catch((error) => console.error("scan range", error.message));
   if (getSettings().live === "1") {
     const ids = listCompetitors()

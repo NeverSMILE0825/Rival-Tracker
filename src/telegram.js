@@ -1,4 +1,4 @@
-import { getSettings, listFundingsForDeployer } from "./db.js";
+import { getSettings, listFundingsForDeployer, listTelegramChats, removeTelegramChat, saveSettings, saveTelegramChat } from "./db.js";
 import { lookupLaunchMarket } from "./market.js";
 import { renderAlertCard } from "./card.js";
 import { formatKst, sleep, timezoneLabel } from "./util.js";
@@ -92,10 +92,35 @@ export async function notifyPaid(payment) {
 export async function sendTelegram(text, override = {}) {
   const settings = getSettings();
   const token = String(override.token || settings.telegramBotToken || "").trim();
-  const chatId = String(override.chatId || settings.telegramChatId || "").trim();
-  if (!token || !chatId) throw new Error("Add a bot token and a chat id first.");
+  const explicit = String(override.chatId || "").trim();
+  const chatIds = explicit ? [explicit] : destinationChats(settings);
+  if (!token || !chatIds.length) throw new Error("Add a bot token and a chat id first.");
   const buttons = override.buttons || sampleButtons();
   const captionText = String(text || "").slice(0, 1000);
+  let sent = 0;
+  let lastError = null;
+  for (const chatId of chatIds) {
+    try {
+      await deliverTelegram(token, chatId, captionText, { ...override, buttons });
+      sent += 1;
+    } catch (error) {
+      lastError = error;
+      if (/blocked|deactivated|chat not found/i.test(error.message)) removeTelegramChat(chatId);
+      console.error("telegram", error.message);
+    }
+  }
+  if (!sent) throw lastError || new Error("Could not reach Telegram.");
+}
+
+function destinationChats(settings) {
+  const ids = new Set();
+  if (settings.telegramChatId) ids.add(String(settings.telegramChatId));
+  for (const chat of listTelegramChats()) ids.add(String(chat.chat_id));
+  return [...ids];
+}
+
+async function deliverTelegram(token, chatId, captionText, override) {
+  const buttons = override.buttons || sampleButtons();
   if (override.photoBuffer) {
     try {
       await postTelegramPhoto(token, chatId, override.photoBuffer, captionText, buttons);
@@ -126,6 +151,76 @@ export async function sendTelegram(text, override = {}) {
     disable_web_page_preview: true,
     reply_markup: buttons,
   });
+}
+
+let inboxStarted = false;
+
+export function startTelegramInbox() {
+  if (inboxStarted) return;
+  inboxStarted = true;
+  console.log("Telegram is watching for teammates who press Start");
+  const loop = async () => {
+    while (true) {
+      try {
+        await readTelegramStarts();
+      } catch (error) {
+        console.error("telegram inbox", error.message);
+        await sleep(5000);
+      }
+    }
+  };
+  loop();
+}
+
+async function readTelegramStarts() {
+  const settings = getSettings();
+  const token = String(settings.telegramBotToken || "").trim();
+  if (!token) {
+    await sleep(5000);
+    return;
+  }
+  const offset = Number(settings.telegramUpdateOffset) || 0;
+  let response;
+  try {
+    response = await fetch(`https://api.telegram.org/bot${token}/getUpdates`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        offset: offset || undefined,
+        timeout: 20,
+        allowed_updates: ["message"],
+      }),
+      signal: AbortSignal.timeout(25000),
+    });
+  } catch {
+    await sleep(3000);
+    return;
+  }
+  const data = await response.json().catch(() => ({}));
+  if (!data.ok) {
+    console.error("telegram inbox", data.description || response.status);
+    await sleep(5000);
+    return;
+  }
+  let next = offset;
+  for (const update of data.result || []) {
+    next = update.update_id + 1;
+    const message = update.message;
+    const text = String(message?.text || "");
+    if (!message?.chat?.id || !text.startsWith("/start")) continue;
+    const name = [message.from?.first_name, message.from?.last_name].filter(Boolean).join(" ");
+    saveTelegramChat({
+      chatId: message.chat.id,
+      name,
+      username: message.from?.username || "",
+    });
+    console.log("Telegram subscriber added");
+    await postTelegram(token, "sendMessage", {
+      chat_id: message.chat.id,
+      text: "You're on the Rival Tracker list. New launches and paid alerts will show up in this chat.",
+    }).catch((error) => console.error("telegram welcome", error.message));
+  }
+  if (next !== offset) saveSettings({ telegramUpdateOffset: String(next) });
 }
 
 async function cardImage(card) {
@@ -181,6 +276,7 @@ function sampleButtons() {
 }
 
 function tokenLinks(address, creator, market = {}) {
+  market = market || {};
   const token = String(address || "").toLowerCase();
   const pair = String(market.pairAddress || "");
   const dextools = market.dextoolsUrl
