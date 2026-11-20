@@ -28,7 +28,7 @@ if not errorlevel 1 (
 )
 
 echo Starting Rival Tracker at http://127.0.0.1:4177
-echo Close this window to stop it.
+echo The startup task keeps it running after this window closes.
 start "" /b cmd /c "ping -n 3 127.0.0.1 >nul & start http://127.0.0.1:4177"
 node src\server.js
 echo.
