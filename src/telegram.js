@@ -51,7 +51,7 @@ export async function notifyPaid(payment) {
     dextools,
     dexscreener,
   ].join("\n");
-  await sendTelegram(text, { photo: payment.logo_url || "" });
+  await sendTelegram(text, { photo: payment.banner_url || "" });
   return true;
 }
 

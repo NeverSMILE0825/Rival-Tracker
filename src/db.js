@@ -293,6 +293,14 @@ if (!tokenColumns.some((column) => column.name === "txns_total")) {
 if (!tokenColumns.some((column) => column.name === "logo_url")) {
   db.exec("ALTER TABLE tokens ADD COLUMN logo_url TEXT");
 }
+if (!tokenColumns.some((column) => column.name === "banner_url")) {
+  db.exec("ALTER TABLE tokens ADD COLUMN banner_url TEXT");
+}
+
+const pairColumns = db.prepare("PRAGMA table_info(token_pairs)").all();
+if (!pairColumns.some((column) => column.name === "quote_symbol")) {
+  db.exec("ALTER TABLE token_pairs ADD COLUMN quote_symbol TEXT");
+}
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS token_paid (
@@ -538,6 +546,14 @@ export function setTokenLogo(address, url) {
   db.prepare("UPDATE tokens SET logo_url = ? WHERE address = ?").run(logo, String(address).toLowerCase());
 }
 
+export function setTokenBanner(address, url) {
+  const banner = String(url || "").trim();
+  if (!banner.startsWith("https://")) return;
+  const current = db.prepare("SELECT banner_url FROM tokens WHERE address = ?").get(String(address).toLowerCase());
+  if (!current || current.banner_url === banner) return;
+  db.prepare("UPDATE tokens SET banner_url = ? WHERE address = ?").run(banner, String(address).toLowerCase());
+}
+
 export function savePaid(event) {
   const paidAt = Number(event.paidAt) || 0;
   const amount = event.amount == null ? null : Number(event.amount);
@@ -584,7 +600,7 @@ export function listUnalertedPaid() {
   return db
     .prepare(
       `SELECT p.fingerprint, p.token_address, p.source, p.kind, p.amount, p.paid_at, p.detail,
-              t.symbol, t.name, t.deployer, t.pair_address, t.dextools_url, t.dexscreener_url, t.logo_url
+              t.symbol, t.name, t.deployer, t.pair_address, t.dextools_url, t.dexscreener_url, t.banner_url
        FROM token_paid p JOIN tokens t ON t.address = p.token_address
        WHERE p.alerted = 0
        ORDER BY p.paid_at ASC`,
@@ -602,9 +618,9 @@ export function replaceTokenPairs(tokenAddress, pairs) {
     db.prepare("DELETE FROM token_pairs WHERE token_address = ?").run(tokenAddress);
     const insert = db.prepare(
       `INSERT INTO token_pairs(
-         pair_address, token_address, dex, label, price_usd, liquidity_usd, market_cap,
+         pair_address, token_address, dex, label, quote_symbol, price_usd, liquidity_usd, market_cap,
          volume_24h, price_change_24h, txns_24h, pair_created_at, status, dextools_url, dexscreener_url, updated_at
-       ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
     const seen = new Set();
     for (const pair of pairs) {
@@ -616,6 +632,7 @@ export function replaceTokenPairs(tokenAddress, pairs) {
         tokenAddress,
         pair.dex,
         pair.label,
+        pair.quoteSymbol,
         pair.priceUsd,
         pair.liquidityUsd,
         pair.marketCap,

@@ -490,9 +490,47 @@ function dextoolsHref(token) {
   return stored || "#";
 }
 
-function tokenLogo(url) {
-  if (!url) return `<span class="token-logo empty"></span>`;
-  return `<img class="token-logo" src="${esc(url)}" alt="" onerror="this.style.visibility='hidden'" />`;
+function formatBannerAge(unix) {
+  if (!unix) return "";
+  const seconds = Math.max(0, Math.floor(Date.now() / 1000) - Number(unix));
+  const minutes = Math.floor(seconds / 60);
+  const hours = Math.floor(minutes / 60);
+  const days = Math.floor(hours / 24);
+  if (days >= 1) return `${days}d`;
+  if (hours >= 1) return `${hours}h`;
+  if (minutes >= 1) return `${minutes}m`;
+  return `${Math.max(1, seconds)}s`;
+}
+
+function exchangeTitle(dex, label) {
+  const raw = String(dex || "").toLowerCase();
+  const known = {
+    uniswap: "Uniswap",
+    sushiswap: "SushiSwap",
+    pancakeswap: "PancakeSwap",
+    curve: "Curve",
+    balancer: "Balancer",
+  };
+  const name = known[raw] || (raw ? raw.charAt(0).toUpperCase() + raw.slice(1) : "");
+  const version = /^v\d/i.test(String(label || "")) ? String(label).toLowerCase() : "";
+  if (name && version) return `${name} ${version}`;
+  return name || version || String(label || "");
+}
+
+function tokenBanner(token) {
+  if (!token.banner) return "";
+  const quote = token.quote || "ETH";
+  const age = formatBannerAge(token.launched);
+  const exchange = exchangeTitle(token.dex, token.label);
+  const rank = Number(token.rank) > 0 ? `#${Number(token.rank)}` : "";
+  return `<div class="token-banner">
+    <div class="token-banner-top">
+      <span class="token-banner-name"><span class="token-check">✓</span>${esc(token.symbol)} / ${esc(quote)}</span>
+      <span class="token-banner-stats">${age ? `<span class="banner-age">${esc(age)}</span>` : ""}${rank ? `<span class="banner-rank">${esc(rank)}</span>` : ""}</span>
+    </div>
+    <div class="token-banner-pills"><span>Ethereum</span>${exchange ? `<span>${esc(exchange)}</span>` : ""}</div>
+    <img src="${esc(token.banner)}" alt="" onerror="this.closest('.token-banner').remove()" />
+  </div>`;
 }
 
 function paidCell(payments) {
@@ -511,7 +549,7 @@ function tokenRow(token) {
   const exchange = token.label ? `<span class="exch">${esc(token.label)}</span>` : "";
   return `<tr class="clickable" data-act="drawer-token" data-address="${esc(token.address)}">
     <td><span class="pill ${esc(token.status)}">${esc(token.status)}</span></td>
-    <td class="token-cell"><span class="token-id">${tokenLogo(token.logo)}<span><b>${esc(token.symbol)}</b> <span class="muted">(${esc(token.name)})</span>${exchange}</span></span></td>
+    <td class="token-cell">${tokenBanner(token)}<span class="token-name"><b>${esc(token.symbol)}</b> <span class="muted">(${esc(token.name)})</span>${exchange}</span></td>
     <td>${esc(token.rival)}</td>
     <td>${esc(formatKst(token.launched))}</td>
     <td>${esc(formatUsd(token.liquidity))}</td>
@@ -554,6 +592,9 @@ function displayTokenRows() {
         name: token.name || "",
         status: pair.status || token.status,
         label: String(pair.label || "").toLowerCase(),
+        dex: pair.dex || token.dex || "",
+        quote: pair.quote_symbol || "",
+        banner: token.banner_url || "",
         rival: rivalLabel(token.fundings),
         launched: pair.pair_created_at || token.pair_created_at || token.created_at || null,
         liquidity: numberOrNull(pair.liquidity_usd),
@@ -561,7 +602,6 @@ function displayTokenRows() {
         change: numberOrNull(pair.price_change_24h),
         tx24h: numberOrNull(pair.txns_24h),
         txTotal: numberOrNull(token.txns_total),
-        logo: token.logo_url || "",
         payments: token.payments || [],
         paid: (token.payments || []).reduce((latest, payment) => Math.max(latest, Number(payment.paid_at) || 0), 0) || null,
         pairAddress: pair.pair_address || token.pair_address || "",
@@ -976,7 +1016,15 @@ function paintDrawer() {
     if (!token) return;
     root.innerHTML = `<div class="drawer-back"><aside class="drawer">
       <button class="btn" data-act="close-drawer">Close</button>
-      <h3 class="token-id" style="margin-top:16px">${tokenLogo(token.logo_url)}<span>${esc(token.symbol)} <span class="muted">${esc(token.name)}</span></span></h3>
+      ${tokenBanner({
+        banner: token.banner_url,
+        symbol: token.symbol,
+        quote: (token.pairs || []).slice().sort((a, b) => Number(b.liquidity_usd) - Number(a.liquidity_usd))[0]?.quote_symbol || "",
+        launched: launchedAt(token),
+        dex: token.dex,
+        label: (token.pairs || []).slice().sort((a, b) => Number(b.liquidity_usd) - Number(a.liquidity_usd))[0]?.label || "",
+      })}
+      <h3 style="margin-top:16px">${esc(token.symbol)} <span class="muted">${esc(token.name)}</span></h3>
       <div class="kv">
         <span>Paid</span><div>${paidCell(token.payments)}</div>
         <span>Status</span><div><span class="pill ${esc(token.status)}">${esc(token.status)}</span></div>

@@ -1,19 +1,16 @@
 import {
   getSettings,
-  getToken,
   listTokenAddresses,
   listUnalertedPaid,
   markPaidAlerted,
   savePaid,
   saveSettings,
-  setTokenLogo,
 } from "./db.js";
 import { notifyPaid } from "./telegram.js";
 import { nowSec, sleep } from "./util.js";
 
 const ORDER_GAP_MS = 1100;
 const RACE_GAP_MS = 60_000;
-const logoMiss = new Set();
 const priority = [];
 let cursor = 0;
 let lastRace = 0;
@@ -87,12 +84,6 @@ function nitroDetail(nitro) {
       return `${count}×${type} Nitro`;
     })
     .join(", ");
-}
-
-function dextoolsLogoUrl(logo) {
-  if (!logo || typeof logo !== "string") return "";
-  if (logo.startsWith("https://")) return logo;
-  return `https://www.dextools.io/resources/tokens/logos/${logo}`;
 }
 
 async function syncOrders(address, baseline) {
@@ -175,8 +166,6 @@ async function syncRace(baseline) {
     for (const row of results) {
       const address = String(row.mainToken?.address || "").toLowerCase();
       if (!known.has(address)) continue;
-      const logo = dextoolsLogoUrl(row.mainToken?.logo);
-      if (logo) setTokenLogo(address, logo);
       const nitro = row.nitro || {};
       const total = Number(nitro.total) || 0;
       if (!total) continue;
@@ -196,24 +185,6 @@ async function syncRace(baseline) {
     if (!results.length) break;
     page += 1;
   }
-}
-
-async function maybeLogo(address) {
-  const token = getToken(address);
-  if (!token || token.logo_url || logoMiss.has(address)) return;
-  const url = `https://www.dextools.io/resources/tokens/logos/ether/${address}.png`;
-  try {
-    const response = await fetch(url, { signal: AbortSignal.timeout(8000) });
-    const type = response.headers.get("content-type") || "";
-    if (response.ok && type.startsWith("image/")) {
-      setTokenLogo(address, url);
-      return;
-    }
-  } catch {
-    logoMiss.add(address);
-    return;
-  }
-  logoMiss.add(address);
 }
 
 async function flushAlerts() {
@@ -240,7 +211,6 @@ async function loop() {
       const address = nextAddress();
       if (address) {
         await syncOrders(address, baseline);
-        await maybeLogo(address);
       } else {
         paused = 5000;
       }

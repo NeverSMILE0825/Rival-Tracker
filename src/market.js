@@ -1,4 +1,4 @@
-import { getSettings, getToken, listTokenAddresses, replaceTokenPairs, setTokenLogo, updateTokenMarket } from "./db.js";
+import { getSettings, getToken, listTokenAddresses, replaceTokenPairs, setTokenBanner, updateTokenMarket } from "./db.js";
 import { sleep } from "./util.js";
 
 function classify(liquidity, peak, threshold) {
@@ -49,6 +49,7 @@ function pairRecord(pair, threshold) {
     status: pairStatus(liquidity, threshold),
     dextoolsUrl: dextoolsUrl(pair.pairAddress, pair.baseToken?.address),
     dexscreenerUrl: pair.url || null,
+    quoteSymbol: pair.quoteToken?.symbol || null,
     liquidity,
   };
 }
@@ -99,18 +100,6 @@ function bestPair(pairs) {
   return records[0] || null;
 }
 
-async function dextoolsLogo(token) {
-  const url = `https://www.dextools.io/resources/tokens/logos/ether/${token}.png`;
-  try {
-    const response = await fetch(url, { signal: AbortSignal.timeout(8000) });
-    const type = response.headers.get("content-type") || "";
-    if (response.ok && type.startsWith("image/")) return url;
-  } catch {
-    return "";
-  }
-  return "";
-}
-
 export async function lookupLaunchMarket(address) {
   const token = String(address || "").toLowerCase();
   let pairs = [];
@@ -126,9 +115,9 @@ export async function lookupLaunchMarket(address) {
   const best = bestPair(pairs);
   const saved = best?.pairAddress ? null : getToken(token);
   const pairAddress = best?.pairAddress || saved?.pair_address || "";
-  const imageUrl =
-    pairs.map((pair) => pair.info?.imageUrl).find((url) => typeof url === "string" && url.startsWith("https://")) ||
-    (await dextoolsLogo(token));
+  const header = pairs.map((pair) => pair.info?.header).find((url) => typeof url === "string" && url.startsWith("https://")) || "";
+  if (header) setTokenBanner(token, header);
+  const imageUrl = header;
   return {
     pairAddress,
     dextoolsUrl: pairAddress
@@ -194,18 +183,18 @@ async function refreshMarketsNow(addresses) {
       continue;
     }
     const grouped = new Map();
-    const images = new Map();
+    const banners = new Map();
     for (const pair of pairs) {
       const token = pair.baseToken?.address?.toLowerCase();
       if (!token || !chunk.includes(token)) continue;
-      const image = pair.info?.imageUrl;
-      if (typeof image === "string" && image.startsWith("https://")) images.set(token, image);
+      const header = pair.info?.header;
+      if (typeof header === "string" && header.startsWith("https://")) banners.set(token, header);
       if (!pair.pairAddress) continue;
       const list = grouped.get(token) || [];
       list.push(pairRecord(pair, threshold));
       grouped.set(token, list);
     }
-    for (const [token, image] of images) setTokenLogo(token, image);
+    for (const [token, header] of banners) setTokenBanner(token, header);
     for (const address of chunk) {
       const existing = getToken(address);
       if (!existing) continue;
