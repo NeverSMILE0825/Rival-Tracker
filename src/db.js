@@ -94,6 +94,7 @@ db.exec(`
 
   CREATE INDEX IF NOT EXISTS idx_fundings_comp ON fundings(competitor_id);
   CREATE INDEX IF NOT EXISTS idx_fundings_dep ON fundings(deployer);
+  CREATE INDEX IF NOT EXISTS idx_fundings_comp_dep ON fundings(competitor_id, deployer);
   CREATE TABLE IF NOT EXISTS token_pairs (
     pair_address TEXT PRIMARY KEY,
     token_address TEXT NOT NULL,
@@ -479,6 +480,29 @@ export function listLiveDeployers() {
     .all();
 }
 
+export function listDeployerPage({ since = 0, before = 0, limit = 400, offset = 0 } = {}) {
+  const clauses = ["status IN ('waiting', 'queued', 'drained')"];
+  const params = [];
+  if (since) {
+    clauses.push("first_funded_at >= ?");
+    params.push(since);
+  }
+  if (before) {
+    clauses.push("first_funded_at < ?");
+    params.push(before);
+  }
+  params.push(Math.max(1, Number(limit) || 1), Math.max(0, Number(offset) || 0));
+  return db
+    .prepare(
+      `SELECT address, status, first_funded_at, tx_count
+       FROM deployers
+       WHERE ${clauses.join(" AND ")}
+       ORDER BY first_funded_at DESC
+       LIMIT ? OFFSET ?`,
+    )
+    .all(...params);
+}
+
 export function listHotDeployers(seconds, limit) {
   const since = nowSec() - Math.max(60, Number(seconds) || 0);
   return db
@@ -776,64 +800,95 @@ export function requeueIgnored() {
   return Number(result.changes);
 }
 
+function rowsByKey(rows, key) {
+  const grouped = new Map();
+  for (const row of rows) {
+    const bag = grouped.get(row[key]) || {};
+    bag[row.status] = Number(row.n);
+    grouped.set(row[key], bag);
+  }
+  return grouped;
+}
+
+function fundingsFor(addresses) {
+  const grouped = new Map();
+  const unique = [...new Set(addresses.filter(Boolean))];
+  for (let index = 0; index < unique.length; index += 400) {
+    const chunk = unique.slice(index, index + 400);
+    const marks = chunk.map(() => "?").join(",");
+    const rows = db
+      .prepare(
+        `SELECT f.*, c.label, c.color, c.address AS competitor_address
+         FROM fundings f JOIN competitors c ON c.id = f.competitor_id
+         WHERE f.deployer IN (${marks})
+         ORDER BY f.timestamp ASC`,
+      )
+      .all(...chunk);
+    for (const funding of rows) {
+      const list = grouped.get(funding.deployer) || [];
+      list.push(funding);
+      grouped.set(funding.deployer, list);
+    }
+  }
+  return grouped;
+}
+
+let snapshotCountCache = null;
+
+function loadSnapshotCounts() {
+  if (snapshotCountCache && Date.now() - snapshotCountCache.at < 20000) return snapshotCountCache;
+  const deployerStatus = rowsByKey(
+    db
+      .prepare(
+        `SELECT competitor_id, status, COUNT(*) AS n
+         FROM (
+           SELECT f.competitor_id, d.address, d.status
+           FROM fundings f JOIN deployers d ON d.address = f.deployer
+           GROUP BY f.competitor_id, d.address
+         )
+         GROUP BY competitor_id, status`,
+      )
+      .all(),
+    "competitor_id",
+  );
+  const tokenStatus = rowsByKey(
+    db
+      .prepare(
+        `SELECT f.competitor_id, t.status, COUNT(DISTINCT t.address) AS n
+         FROM fundings f JOIN tokens t ON t.deployer = f.deployer
+         GROUP BY f.competitor_id, t.status`,
+      )
+      .all(),
+    "competitor_id",
+  );
+  const trackedByRival = new Map(
+    db
+      .prepare("SELECT competitor_id, COUNT(DISTINCT deployer) AS n FROM fundings GROUP BY competitor_id")
+      .all()
+      .map((row) => [row.competitor_id, Number(row.n)]),
+  );
+  snapshotCountCache = { at: Date.now(), deployerStatus, tokenStatus, trackedByRival };
+  return snapshotCountCache;
+}
+
 export function snapshot() {
+  const { deployerStatus, tokenStatus, trackedByRival } = loadSnapshotCounts();
   const competitors = listCompetitors().map((competitor) => {
-    const waiting = Number(
-      db.prepare(
-        `SELECT COUNT(DISTINCT f.deployer) AS n
-         FROM fundings f JOIN deployers d ON d.address = f.deployer
-         WHERE f.competitor_id = ? AND d.status = 'waiting'`,
-      ).get(competitor.id).n,
-    );
-    const queued = Number(
-      db.prepare(
-        `SELECT COUNT(DISTINCT f.deployer) AS n
-         FROM fundings f JOIN deployers d ON d.address = f.deployer
-         WHERE f.competitor_id = ? AND d.status = 'queued'`,
-      ).get(competitor.id).n,
-    );
-    const live = Number(
-      db.prepare(
-        `SELECT COUNT(DISTINCT t.address) AS n
-         FROM fundings f JOIN tokens t ON t.deployer = f.deployer
-         WHERE f.competitor_id = ? AND t.status = 'live'`,
-      ).get(competitor.id).n,
-    );
-    const rugged = Number(
-      db.prepare(
-        `SELECT COUNT(DISTINCT t.address) AS n
-         FROM fundings f JOIN tokens t ON t.deployer = f.deployer
-         WHERE f.competitor_id = ? AND t.status = 'rugged'`,
-      ).get(competitor.id).n,
-    );
-    const tokens = Number(
-      db.prepare(
-        `SELECT COUNT(DISTINCT t.address) AS n
-         FROM fundings f JOIN tokens t ON t.deployer = f.deployer
-         WHERE f.competitor_id = ?`,
-      ).get(competitor.id).n,
-    );
-    const tracked = Number(
-      db.prepare("SELECT COUNT(DISTINCT deployer) AS n FROM fundings WHERE competitor_id = ?").get(competitor.id).n,
-    );
-    return { ...competitor, waiting, queued, live, rugged, tokens, tracked };
+    const wallets = deployerStatus.get(competitor.id) || {};
+    const launched = tokenStatus.get(competitor.id) || {};
+    const tokens = Object.values(launched).reduce((sum, count) => sum + count, 0);
+    return {
+      ...competitor,
+      waiting: wallets.waiting || 0,
+      queued: wallets.queued || 0,
+      live: launched.live || 0,
+      rugged: launched.rugged || 0,
+      tokens,
+      tracked: trackedByRival.get(competitor.id) || 0,
+    };
   });
 
-  const fundings = db
-    .prepare(
-      `SELECT f.*, c.label, c.color, c.address AS competitor_address
-       FROM fundings f JOIN competitors c ON c.id = f.competitor_id
-       ORDER BY f.timestamp ASC`,
-    )
-    .all();
-  const fundingByDeployer = new Map();
-  for (const funding of fundings) {
-    const list = fundingByDeployer.get(funding.deployer) || [];
-    list.push(funding);
-    fundingByDeployer.set(funding.deployer, list);
-  }
-
-  const deployers = db
+  const deployerRows = db
     .prepare(
       `SELECT * FROM deployers
        WHERE status != 'ignored'
@@ -841,11 +896,18 @@ export function snapshot() {
                 first_funded_at DESC
        LIMIT 2000`,
     )
-    .all()
-    .map((deployer) => ({
-      ...deployer,
-      fundings: fundingByDeployer.get(deployer.address) || [],
-    }));
+    .all();
+  const tokenRows = db
+    .prepare("SELECT * FROM tokens ORDER BY COALESCE(pair_created_at, created_at) DESC LIMIT 2000")
+    .all();
+  const fundingByDeployer = fundingsFor([
+    ...deployerRows.map((deployer) => deployer.address),
+    ...tokenRows.map((token) => token.deployer),
+  ]);
+  const deployers = deployerRows.map((deployer) => ({
+    ...deployer,
+    fundings: fundingByDeployer.get(deployer.address) || [],
+  }));
 
   const pairRows = db.prepare("SELECT * FROM token_pairs").all();
   const pairsByToken = new Map();
@@ -863,15 +925,12 @@ export function snapshot() {
     paidByToken.set(payment.token_address, list);
   }
 
-  const tokens = db
-    .prepare("SELECT * FROM tokens ORDER BY COALESCE(pair_created_at, created_at) DESC LIMIT 2000")
-    .all()
-    .map((token) => ({
-      ...token,
-      fundings: fundingByDeployer.get(token.deployer) || [],
-      pairs: pairsByToken.get(token.address) || [],
-      payments: paidByToken.get(token.address) || [],
-    }));
+  const tokens = tokenRows.map((token) => ({
+    ...token,
+    fundings: fundingByDeployer.get(token.deployer) || [],
+    pairs: pairsByToken.get(token.address) || [],
+    payments: paidByToken.get(token.address) || [],
+  }));
 
   const events = db.prepare("SELECT * FROM events ORDER BY id DESC LIMIT 40").all();
   const unseen = Number(db.prepare("SELECT COUNT(*) AS n FROM events WHERE seen = 0").get().n);

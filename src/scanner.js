@@ -8,7 +8,7 @@ import {
   hasEvent,
   listCompetitors,
   listFundingsForDeployer,
-  listLiveDeployers,
+  listDeployerPage,
   markDeployer,
   queuedDeployers,
   pruneLargeFundings,
@@ -31,6 +31,8 @@ import {
   getBalance,
   getReceipt,
   headBlock,
+  liveGetBlock,
+  liveHeadBlock,
   inLiveLane,
   internalTransfers,
   transactionCounts,
@@ -1172,178 +1174,254 @@ export async function refreshOne(address) {
   return tokens;
 }
 
-const LIVE_TAIL_MS = 2_000;
-const TIP_BLOCKS = 25;
-const NONCE_CHUNK = 60;
-const INSPECT_LIMIT = 4;
 const liveNonces = new Map();
 const liveRetryAt = new Map();
 const liveInFlight = new Set();
+const inspectQueue = [];
+const inspectQueued = new Set();
 const seenLiveTx = new Set();
+const traceQueue = [];
 let liveTailStarted = false;
-let inspecting = 0;
-let backlogInspects = 0;
-let nonceCursor = 0;
+let lastTipLog = 0;
+let hotOffset = 0;
+let oldOffset = 0;
+let noncePasses = 0;
 
-async function pageWindow(loadPage, maxPages = 5) {
+function enqueueInspect(address, urgent) {
+  const key = String(address || "").toLowerCase();
+  if (!key || inspectQueued.has(key) || liveInFlight.has(key)) return;
+  if (!urgent && inspectQueue.length >= 40) return;
+  inspectQueued.add(key);
+  if (urgent) inspectQueue.unshift(key);
+  else inspectQueue.push(key);
+}
+
+function asExplorerTx(raw, timestamp) {
+  return {
+    hash: raw.hash,
+    from: String(raw.from || "").toLowerCase(),
+    to: raw.to ? String(raw.to).toLowerCase() : null,
+    value: BigInt(raw.value || "0x0").toString(),
+    input: raw.input || "0x",
+    blockNumber: String(Number(BigInt(raw.blockNumber || "0x0"))),
+    timeStamp: String(timestamp),
+    isError: "0",
+    contractAddress: "",
+  };
+}
+
+function rivalNeedsInternals(raw) {
+  if (!raw?.to) return true;
+  const input = String(raw.input || "0x").toLowerCase();
+  return input !== "0x" && input !== "0x0";
+}
+
+async function internalsInBlock(address, blockNumber) {
   const rows = [];
-  for (let page = 1; page <= maxPages; page += 1) {
-    const batch = await loadPage(page);
+  for (let page = 1; page <= 3; page += 1) {
+    const batch = await internalTxs(address, blockNumber, page, 100, blockNumber);
     rows.push(...batch);
     if (batch.length < 100) break;
   }
   return rows;
 }
 
-function highestBlock(rows) {
-  let block = 0;
-  for (const tx of rows) block = Math.max(block, Number(tx.blockNumber) || 0);
-  return block;
-}
-
-function queueInspect(address, settings, nonce, liveChange) {
-  const key = String(address || "").toLowerCase();
-  if (!key || liveInFlight.has(key)) return false;
-  if (liveChange) {
-    if (inspecting >= INSPECT_LIMIT) return false;
-  } else if (backlogInspects >= 1 || inspecting >= INSPECT_LIMIT) {
-    return false;
-  }
-  inspecting += 1;
-  if (!liveChange) backlogInspects += 1;
-  liveInFlight.add(key);
-  inspectDeployer(key, settings)
-    .then(async (tokens) => {
-      if (nonce != null) liveNonces.set(key, nonce);
-      if (tokens?.length) await refreshMarkets(tokens);
-    })
-    .catch((error) => {
-      console.error("live wallet", key, error.message);
-      liveRetryAt.set(key, Date.now() + 30_000);
-    })
-    .finally(() => {
-      inspecting -= 1;
-      if (!liveChange) backlogInspects -= 1;
-      liveInFlight.delete(key);
-    });
-  return true;
-}
-
-async function watchWaitingWallets(settings) {
-  const rows = listLiveDeployers();
-  if (!rows.length) return;
-  const started = Date.now();
-  let scanned = 0;
-  while (scanned < rows.length && Date.now() - started < 35_000) {
-    if (getSettings().live !== "1") return;
-    const start = nonceCursor % rows.length;
-    const part = [];
-    for (let index = 0; index < NONCE_CHUNK && scanned < rows.length; index += 1) {
-      part.push(rows[(start + index) % rows.length]);
-      scanned += 1;
-    }
-    nonceCursor = (start + part.length) % rows.length;
-    let counts;
-    try {
-      counts = await transactionCounts(part.map((row) => row.address));
-    } catch (error) {
-      console.error("live nonce", error.message);
-      continue;
-    }
-    for (const row of part) {
-      const address = row.address.toLowerCase();
-      const nonce = counts.get(address);
-      if (nonce == null) continue;
-      const previous = liveNonces.get(address);
-      const known = Number(row.tx_count) || 0;
-      if (previous == null) {
-        const gap = nonce - known;
-        const recent = Number(row.first_funded_at) > nowSec() - 36 * 3600;
-        if (gap > 0 && (recent || gap <= 2) && (liveRetryAt.get(address) || 0) <= Date.now()) {
-          if (!queueInspect(address, settings, nonce, true)) continue;
-        } else {
-          liveNonces.set(address, nonce);
-        }
-        continue;
-      }
-      if (nonce > previous && (liveRetryAt.get(address) || 0) <= Date.now()) queueInspect(address, settings, nonce, true);
-      else liveNonces.set(address, nonce);
-    }
+function trimSeenLive() {
+  if (seenLiveTx.size <= 8000) return;
+  for (const key of seenLiveTx) {
+    seenLiveTx.delete(key);
+    if (seenLiveTx.size <= 4000) break;
   }
 }
 
-async function liveTailOnce() {
+function recordDirectFunding(rival, tx, minWei, maxWei) {
+  if ((tx.from || "").toLowerCase() !== rival.address.toLowerCase()) return;
+  if (tx.isError === "1") return;
+  const value = BigInt(tx.value || "0");
+  const direct = normalizeAddress(tx.to);
+  if (!direct || direct === rival.address.toLowerCase()) return;
+  if (value < minWei || value > maxWei) return;
+  recordFunding({
+    competitorId: rival.id,
+    deployer: direct,
+    funder: rival.address,
+    txHash: tx.hash,
+    blockNumber: Number(tx.blockNumber),
+    timestamp: Number(tx.timeStamp),
+    valueWei: value.toString(),
+    kind: "direct",
+  });
+}
+
+function queueTrace(job) {
+  if (traceQueue.length >= 40) traceQueue.shift();
+  traceQueue.push(job);
+}
+
+async function drainTraces() {
+  const job = traceQueue.shift();
+  if (!job) return;
+  const settings = getSettings();
+  const minWei = ethToWei(settings.minFundingEth || "0.01");
+  const maxWei = ethToWei(settings.maxFundingEth || "20");
+  if (job.kind === "internal") {
+    const rows = await internalsInBlock(job.rival.address, job.blockNumber);
+    for (const tx of rows) {
+      const key = `i:${tx.hash}:${tx.to}`;
+      if (seenLiveTx.has(key)) continue;
+      seenLiveTx.add(key);
+      recordOutgoingInternal(job.rival, tx, minWei, maxWei);
+    }
+    return;
+  }
+  await traceFundingTx(job.rival, job.tx, minWei, maxWei);
+}
+
+async function watchNewBlocks() {
   const settings = getSettings();
   if (settings.live !== "1") return;
-  const head = await headBlock();
+  const head = await liveHeadBlock();
   const saved = Number(settings.liveSeenBlock) || 0;
-  const from = saved > 0 ? Math.max(1, saved - 2) : Math.max(1, head - 30);
-  const to = Math.min(head, from + TIP_BLOCKS - 1);
+  const cursor = saved > 0 ? saved : Math.max(0, head - 2);
+  const end = Math.min(head, cursor + 6);
+  if (end <= cursor) return;
   const minWei = ethToWei(settings.minFundingEth || "0.01");
   const maxWei = ethToWei(settings.maxFundingEth || "20");
   const rivals = listCompetitors().filter((competitor) => competitor.enabled);
-  let failed = false;
-  let coveredTo = to;
-  if (from <= to) {
-    for (const rival of rivals) {
-      if (getSettings().live !== "1") return;
+  const rivalBy = new Map(rivals.map((competitor) => [competitor.address.toLowerCase(), competitor]));
+  let reached = cursor;
+  for (let blockNumber = cursor + 1; blockNumber <= end; blockNumber += 1) {
+    const block = await liveGetBlock(blockNumber);
+    if (!block || !Array.isArray(block.transactions)) break;
+    const timestamp = Number(BigInt(block.timestamp));
+    const internalRivals = new Set();
+    for (const raw of block.transactions) {
+      const from = String(raw.from || "").toLowerCase();
+      const to = String(raw.to || "").toLowerCase();
+      const rival = rivalBy.get(from);
+      if (!rival) {
+        if (rivalBy.has(to)) internalRivals.add(to);
+        continue;
+      }
+      if (rivalNeedsInternals(raw)) internalRivals.add(from);
+      if (!raw.hash || seenLiveTx.has(raw.hash)) continue;
+      seenLiveTx.add(raw.hash);
+      const tx = asExplorerTx(raw, timestamp);
       try {
-        const normal = await pageWindow((page) => normalTxs(rival.address, from, page, 100, to), 8);
-        for (const tx of normal) {
-          if (!tx.hash || seenLiveTx.has(tx.hash)) continue;
-          seenLiveTx.add(tx.hash);
-          try {
-            await handleCompetitorTx(rival, tx, minWei, maxWei);
-          } catch (error) {
-            console.error("live tx", error.message);
-          }
-        }
-        const internal = await pageWindow((page) => internalTxs(rival.address, from, page, 100, to), 8);
-        for (const tx of internal) {
-          const key = `i:${tx.hash}:${tx.to}`;
-          if (seenLiveTx.has(key)) continue;
-          seenLiveTx.add(key);
-          recordOutgoingInternal(rival, tx, minWei, maxWei);
-        }
-        if (normal.length >= 800) coveredTo = Math.min(coveredTo, Math.max(from + 1, highestBlock(normal) || from));
-        if (internal.length >= 800) coveredTo = Math.min(coveredTo, Math.max(from + 1, highestBlock(internal) || from));
-        const fresh = queuedDeployers(rival.id, 20).filter((deployer) => Number(deployer.first_funded_at) > nowSec() - 20 * 60);
-        for (const deployer of fresh) queueInspect(deployer.address, settings, null, true);
+        recordDirectFunding(rival, tx, minWei, maxWei);
+        if (!plainEthTransfer(tx)) queueTrace({ kind: "trace", rival, tx });
       } catch (error) {
-        failed = true;
-        console.error("live tip", rival.label, error.message);
+        console.error("live tx", error.message);
       }
     }
+    for (const address of internalRivals) {
+      const rival = rivalBy.get(address);
+      if (rival) queueTrace({ kind: "internal", rival, blockNumber });
+    }
+    reached = blockNumber;
+    saveSettings({ liveSeenBlock: String(blockNumber) });
   }
-  if (seenLiveTx.size > 8000) {
-    for (const key of seenLiveTx) {
-      seenLiveTx.delete(key);
-      if (seenLiveTx.size <= 4000) break;
+  trimSeenLive();
+  if (reached > cursor && Date.now() - lastTipLog > 15000) {
+    lastTipLog = Date.now();
+    console.error(`live tip at block ${reached.toLocaleString()} of ${head.toLocaleString()}`);
+  }
+}
+
+async function readNonces(rows) {
+  const counts = await transactionCounts(rows.map((row) => row.address));
+  const fresh = nowSec() - 90 * 60;
+  for (const row of rows) {
+    const address = row.address.toLowerCase();
+    const nonce = counts.get(address);
+    if (nonce == null) continue;
+    const seen = liveNonces.get(address);
+    if (seen == null) {
+      liveNonces.set(address, nonce);
+      const gap = nonce - (Number(row.tx_count) || 0);
+      if (gap > 0 && gap <= 8 && Number(row.first_funded_at) >= fresh && (liveRetryAt.get(address) || 0) <= Date.now()) {
+        enqueueInspect(address, false);
+      }
+      continue;
+    }
+    if (nonce > seen) {
+      liveNonces.set(address, nonce);
+      console.error("live activity", address, nonce);
+      if ((liveRetryAt.get(address) || 0) <= Date.now()) enqueueInspect(address, true);
     }
   }
-  if (!failed && to > 0) {
-    const next = coveredTo >= head ? Math.max(1, head - 2) : Math.max(from, coveredTo);
-    saveSettings({ liveSeenBlock: String(next) });
+}
+
+async function watchNonces() {
+  const now = nowSec();
+  const newest = listDeployerPage({ since: now - 6 * 3600, limit: 250, offset: 0 });
+  const hot = listDeployerPage({ since: now - 6 * 3600, limit: 300, offset: hotOffset });
+  hotOffset = hot.length < 300 ? 0 : hotOffset + hot.length;
+  const older = listDeployerPage({ before: now - 6 * 3600, limit: 200, offset: oldOffset });
+  oldOffset = older.length < 200 ? 0 : oldOffset + older.length;
+  const seen = new Set();
+  const rows = [];
+  for (const row of [...newest, ...hot, ...older]) {
+    if (seen.has(row.address)) continue;
+    seen.add(row.address);
+    rows.push(row);
   }
-  await watchWaitingWallets(settings);
+  if (!rows.length) return;
+  const started = Date.now();
+  await readNonces(rows);
+  noncePasses += 1;
+  if (noncePasses <= 2 || hotOffset === 0) {
+    console.error(`live nonce checked ${rows.length} wallets in ${Math.round((Date.now() - started) / 1000)}s`);
+  }
+}
+
+function drainInspects() {
+  if (!inspectQueue.length || liveInFlight.size >= 3) return;
+  const key = inspectQueue.shift();
+  inspectQueued.delete(key);
+  if ((liveRetryAt.get(key) || 0) > Date.now()) {
+    inspectQueue.push(key);
+    inspectQueued.add(key);
+    return;
+  }
+  liveInFlight.add(key);
+  inspectDeployer(key, getSettings())
+    .then((tokens) => {
+      if (tokens?.length) refreshMarkets(tokens, { transfers: false });
+    })
+    .catch((error) => {
+      console.error("live wallet", key, error.message);
+      liveRetryAt.set(key, Date.now() + 20_000);
+      setTimeout(() => {
+        liveRetryAt.set(key, 0);
+        enqueueInspect(key, true);
+      }, 20_000);
+    })
+    .finally(() => {
+      liveInFlight.delete(key);
+    });
+}
+
+async function liveLoop(label, work, pause) {
+  while (getSettings().live === "1") {
+    try {
+      await work();
+    } catch (error) {
+      console.error(label, error.message);
+    }
+    await sleep(pause);
+  }
+  liveTailStarted = false;
 }
 
 export function startLiveTail() {
   if (liveTailStarted) return;
   liveTailStarted = true;
-  const loop = async () => {
-    console.log("Live launch watch is checking new launches every few seconds");
-    while (getSettings().live === "1") {
-      try {
-        await inLiveLane(() => liveTailOnce());
-      } catch (error) {
-        console.error("live tail", error.message);
-      }
-      await sleep(LIVE_TAIL_MS);
-    }
-    liveTailStarted = false;
-  };
-  loop();
+  console.log("Live launch watch is checking new blocks and funded wallets every few seconds");
+  liveLoop("live tip", () => watchNewBlocks(), 800);
+  liveLoop("live nonce", () => watchNonces(), 400);
+  liveLoop("live trace", () => inLiveLane(() => drainTraces()), 250);
+  liveLoop("live inspect", () => inLiveLane(() => drainInspects()), 300);
 }
 
 export function autoScanTick() {

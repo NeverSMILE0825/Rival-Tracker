@@ -2,7 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { getSettings } from "./db.js";
 import { decodeAbiString, isRetryableMessage, parseApiKeys, sleep } from "./util.js";
 
-const RPCS = ["https://eth.drpc.org", "https://ethereum.publicnode.com", "https://1rpc.io/eth"];
+const RPCS = ["https://ethereum.publicnode.com", "https://ethereum-rpc.publicnode.com"];
 const ROUTESCAN = "https://api.routescan.io/v2/network/mainnet/evm/1/etherscan/api";
 const ETHERSCAN = "https://api.etherscan.io/v2/api";
 const TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
@@ -187,17 +187,21 @@ function creationQuery(batch) {
   });
 }
 
-async function rpc(method, params) {
+async function rpc(method, params, timeout = 25000) {
   let lastError;
   for (let i = 0; i < RPCS.length; i += 1) {
     const url = RPCS[(rpcCursor + i) % RPCS.length];
     try {
       const payload = await withRetry(() =>
-        fetchJson(url, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
-        }),
+        fetchJson(
+          url,
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+          },
+          timeout,
+        ),
       );
       if (payload.error) throw new Error(payload.error.message || "RPC error");
       rpcCursor = (rpcCursor + i) % RPCS.length;
@@ -210,15 +214,49 @@ async function rpc(method, params) {
 }
 
 export async function headBlock() {
-  const hex = await rpc("eth_blockNumber", []);
+  const hex = await rpc("eth_blockNumber", [], 8000);
   return Number(BigInt(hex));
 }
 
-export async function transactionCounts(addresses) {
-  const list = [...new Set(addresses.map((address) => String(address || "").toLowerCase()))].filter((address) =>
-    /^0x[a-f0-9]{40}$/.test(address),
-  );
-  if (!list.length) return new Map();
+export async function getBlock(number) {
+  const block = Number(number);
+  if (!Number.isFinite(block) || block < 0) return null;
+  return rpc("eth_getBlockByNumber", [`0x${block.toString(16)}`, true], 8000);
+}
+
+async function liveRpc(method, params) {
+  let lastError;
+  for (const url of RPCS) {
+    try {
+      const payload = await fetchJson(
+        url,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+        },
+        4000,
+      );
+      if (payload.error) throw new Error(payload.error.message || "RPC error");
+      return payload.result;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError || new Error("RPC failed");
+}
+
+export async function liveHeadBlock() {
+  return Number(BigInt(await liveRpc("eth_blockNumber", [])));
+}
+
+export async function liveGetBlock(number) {
+  const block = Number(number);
+  if (!Number.isFinite(block) || block < 0) return null;
+  return liveRpc("eth_getBlockByNumber", [`0x${block.toString(16)}`, true]);
+}
+
+async function nonceBatch(list) {
   const body = list.map((address, index) => ({
     jsonrpc: "2.0",
     id: index,
@@ -236,7 +274,7 @@ export async function transactionCounts(addresses) {
           headers: { "content-type": "application/json" },
           body: JSON.stringify(body),
         },
-        15000,
+        6000,
       );
       const rows = Array.isArray(payload) ? payload : [payload];
       const counts = new Map();
@@ -247,13 +285,40 @@ export async function transactionCounts(addresses) {
         counts.set(address, Number(BigInt(item.result)));
       }
       if (!counts.size) throw new Error("Nonce batch was empty");
-      rpcCursor = (rpcCursor + index) % RPCS.length;
+      rpcCursor = (RPCS.indexOf(url) + 1) % RPCS.length;
       return counts;
     } catch (error) {
       lastError = error;
     }
   }
   throw lastError || new Error("Nonce batch failed");
+}
+
+export async function transactionCounts(addresses) {
+  const list = [...new Set(addresses.map((address) => String(address || "").toLowerCase()))].filter((address) =>
+    /^0x[a-f0-9]{40}$/.test(address),
+  );
+  if (!list.length) return new Map();
+  const chunks = [];
+  for (let index = 0; index < list.length; index += 100) chunks.push(list.slice(index, index + 100));
+  const counts = new Map();
+  let lastError;
+  for (let index = 0; index < chunks.length; index += 4) {
+    const wave = chunks.slice(index, index + 4);
+    const parts = await Promise.all(
+      wave.map((chunk) =>
+        nonceBatch(chunk).catch((error) => {
+          lastError = error;
+          return new Map();
+        }),
+      ),
+    );
+    for (const part of parts) {
+      for (const [address, count] of part) counts.set(address, count);
+    }
+  }
+  if (!counts.size) throw lastError || new Error("Nonce batch was empty");
+  return counts;
 }
 
 export async function blockByTime(timestamp, closest = "before") {

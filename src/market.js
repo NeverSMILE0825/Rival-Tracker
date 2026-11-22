@@ -1,5 +1,5 @@
 import { getSettings, getToken, listTokenAddresses, replaceTokenPairs, setTokenBanner, updateTokenMarket } from "./db.js";
-import { sleep } from "./util.js";
+import { nowSec, sleep } from "./util.js";
 
 function classify(liquidity, peak, threshold) {
   if (liquidity == null) {
@@ -77,21 +77,14 @@ async function fetchTokenPairs(address, timeout = 20000, attempts = 3) {
 }
 
 async function fetchTransferCount(address) {
-  for (let attempt = 1; attempt <= 2; attempt += 1) {
-    const response = await fetch(`https://eth.blockscout.com/api/v2/tokens/${address}/counters`, {
-      headers: { accept: "application/json" },
-      signal: AbortSignal.timeout(6000),
-    });
-    if (response.status === 404) return null;
-    if (response.status === 429 || response.status >= 500) {
-      await sleep(700 * attempt);
-      continue;
-    }
-    if (!response.ok) throw new Error(`Blockscout HTTP ${response.status}`);
-    const payload = await response.json();
-    return parseCount(payload.transfers_count);
-  }
-  return null;
+  const response = await fetch(`https://eth.blockscout.com/api/v2/tokens/${address}/counters`, {
+    headers: { accept: "application/json" },
+    signal: AbortSignal.timeout(4000),
+  });
+  if (response.status === 404) return null;
+  if (!response.ok) throw new Error(`Blockscout HTTP ${response.status}`);
+  const payload = await response.json();
+  return parseCount(payload.transfers_count);
 }
 
 function parseCount(value) {
@@ -203,8 +196,28 @@ function socialUrl(socials, type) {
 
 async function fetchPairs(addresses) {
   const all = [];
-  for (const address of addresses) {
-    all.push(...(await fetchTokenPairs(address)));
+  let retries = 0;
+  for (let index = 0; index < addresses.length; index += 30) {
+    const chunk = addresses.slice(index, index + 30);
+    try {
+      const response = await fetch(`https://api.dexscreener.com/tokens/v1/ethereum/${chunk.join(",")}`, {
+        signal: AbortSignal.timeout(8000),
+      });
+      if (response.status === 429 && retries < 2) {
+        retries += 1;
+        await sleep(800);
+        index -= 30;
+        continue;
+      }
+      retries = 0;
+      if (!response.ok) throw new Error(`Dexscreener HTTP ${response.status}`);
+      const payload = await response.json();
+      const pairs = Array.isArray(payload) ? payload : payload.pairs || [];
+      all.push(...pairs);
+    } catch (error) {
+      console.error("market refresh failed", error.message);
+    }
+    if (index + 30 < addresses.length) await sleep(250);
   }
   return all;
 }
@@ -212,8 +225,8 @@ async function fetchPairs(addresses) {
 let marketChain = Promise.resolve();
 let liveMarketStarted = false;
 
-export function refreshMarkets(addresses) {
-  const run = marketChain.then(() => refreshMarketsNow(addresses));
+export function refreshMarkets(addresses, options = {}) {
+  const run = marketChain.then(() => refreshMarketsNow(addresses, options));
   marketChain = run.then(
     () => {},
     () => {},
@@ -224,21 +237,34 @@ export function refreshMarkets(addresses) {
 export function startLiveMarkets() {
   if (liveMarketStarted) return;
   liveMarketStarted = true;
-  const loop = async () => {
+  const run = async (label, load, pause, options) => {
     while (getSettings().live === "1") {
       try {
-        await refreshMarkets(listTokenAddresses());
+        const addresses = load();
+        if (addresses.length) await refreshMarkets(addresses, options);
       } catch (error) {
-        console.error("live markets", error.message);
+        console.error(label, error.message);
       }
-      await sleep(5000);
+      await sleep(pause);
     }
-    liveMarketStarted = false;
   };
-  loop();
+  run(
+    "live markets",
+    () => listTokenAddresses("WHERE created_at >= ? ORDER BY created_at DESC LIMIT 30", [nowSec() - 6 * 3600]),
+    20000,
+    { transfers: false },
+  ).then(() => {
+    liveMarketStarted = false;
+  });
+  run(
+    "market backlog",
+    () => listTokenAddresses("ORDER BY COALESCE(market_at, 0) ASC LIMIT 8"),
+    60000,
+    { transfers: true },
+  );
 }
 
-async function refreshMarketsNow(addresses) {
+async function refreshMarketsNow(addresses, options = {}) {
   const settings = getSettings();
   const threshold = Number(settings.rugLiquidityUsd) || 1500;
   const list =
@@ -279,10 +305,12 @@ async function refreshMarketsNow(addresses) {
       }, null);
       const previousPeak = Number(existing.peak_liquidity_usd) || 0;
       let indexedTotal = null;
-      try {
-        indexedTotal = await fetchTransferCount(address);
-      } catch (error) {
-        console.error("transfer count skipped", address, error.message);
+      if (options.transfers !== false) {
+        try {
+          indexedTotal = await fetchTransferCount(address);
+        } catch (error) {
+          console.error("transfer count skipped", address, error.message);
+        }
       }
       const recentSwaps = records.reduce((sum, record) => sum + (Number(record.txns24h) || 0), 0);
       const txnsTotal = largestCount(indexedTotal, recentSwaps, existing.txns_total);
