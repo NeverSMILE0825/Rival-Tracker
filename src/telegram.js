@@ -115,7 +115,7 @@ export async function sendTelegram(text, override = {}) {
   const chatIds = explicit ? [explicit] : destinationChats(settings);
   if (!token || !chatIds.length) throw new Error("Add a bot token and a chat id first.");
   const buttons = override.buttons || sampleButtons();
-  const captionText = String(text || "").slice(0, 1000);
+  const captionText = captionWithinLimit(text);
   let sent = 0;
   let lastError = null;
   for (const chatId of chatIds) {
@@ -251,6 +251,13 @@ async function cardImage(card) {
   }
 }
 
+function captionWithinLimit(text) {
+  const full = String(text || "");
+  if (full.length <= 1000) return full;
+  const kept = full.split("\n").filter((line) => !line.includes("<a href="));
+  return kept.join("\n").slice(0, 1000);
+}
+
 function caption(info) {
   const symbol = info.symbol || "TOKEN";
   const name = String(info.name || "").trim();
@@ -294,19 +301,27 @@ function sampleButtons() {
   });
 }
 
+function isAddress(value) {
+  return /^0x[a-f0-9]{40}$/.test(String(value || ""));
+}
+
+function isPoolId(value) {
+  const pair = String(value || "");
+  return /^0x[a-fA-F0-9]{40}$/.test(pair) || /^0x[a-fA-F0-9]{64}$/.test(pair);
+}
+
 function tokenLinks(address, creator, market = {}) {
   market = market || {};
   const token = String(address || "").toLowerCase();
-  const pair = String(market.pairAddress || "").trim();
-  const fullPair = /^0x[a-fA-F0-9]{40}$/.test(pair) || /^0x[a-fA-F0-9]{64}$/.test(pair);
-  const dextools = fullPair
-    ? `https://www.dextools.io/app/ether/pair-explorer/${pair}`
-    : market.dextoolsUrl || (token ? `https://www.dextools.io/app/ether/token/${token}` : "");
+  const dev = String(creator || "").toLowerCase();
+  const storedPair = String(market.dextoolsUrl || "").match(/pair-explorer\/(0x[a-fA-F0-9]{40}|0x[a-fA-F0-9]{64})(?:$|[/?#])/i);
+  const candidate = isPoolId(market.pairAddress) ? String(market.pairAddress) : storedPair?.[1] || "";
+  const pair = candidate.toLowerCase() === token ? "" : candidate;
   return {
-    dexscreener: market.dexscreenerUrl || `https://dexscreener.com/ethereum/${token}`,
-    dextools,
-    etherscan: token ? `https://etherscan.io/token/${token}` : "",
-    creator: creator ? `https://etherscan.io/address/${creator}` : "",
+    dexscreener: isAddress(token) ? `https://dexscreener.com/ethereum/${token}` : "",
+    dextools: isPoolId(pair) ? `https://www.dextools.io/app/ether/pair-explorer/${pair}` : "",
+    etherscan: isAddress(token) ? `https://etherscan.io/token/${token}` : "",
+    creator: isAddress(dev) && dev !== token ? `https://etherscan.io/address/${dev}` : "",
     website: market.website || "",
     twitter: market.twitter || "",
   };

@@ -11,9 +11,15 @@ function classify(liquidity, peak, threshold) {
   return "thin";
 }
 
-function dextoolsUrl(pairAddress, tokenAddress) {
-  if (pairAddress) return `https://www.dextools.io/app/ether/pair-explorer/${pairAddress}`;
-  return `https://www.dextools.io/app/ether/token/${tokenAddress}`;
+function isPoolId(value) {
+  const pair = String(value || "");
+  return /^0x[a-fA-F0-9]{40}$/.test(pair) || /^0x[a-fA-F0-9]{64}$/.test(pair);
+}
+
+function dextoolsUrl(pairAddress) {
+  const pair = String(pairAddress || "");
+  if (!isPoolId(pair)) return "";
+  return `https://www.dextools.io/app/ether/pair-explorer/${pair}`;
 }
 
 function exchangeLabel(pair) {
@@ -47,7 +53,7 @@ function pairRecord(pair, threshold) {
     txns24h: buys + sells,
     pairCreatedAt: pair.pairCreatedAt ? Math.floor(Number(pair.pairCreatedAt) / 1000) : null,
     status: pairStatus(liquidity, threshold),
-    dextoolsUrl: dextoolsUrl(pair.pairAddress, pair.baseToken?.address),
+    dextoolsUrl: dextoolsUrl(pair.pairAddress),
     dexscreenerUrl: pair.url || null,
     quoteSymbol: pair.quoteToken?.symbol || null,
     liquidity,
@@ -101,8 +107,13 @@ function largestCount(...values) {
   return Math.max(...counts);
 }
 
-function bestPair(pairs) {
-  const records = pairs.filter((pair) => pair.pairAddress);
+function bestPair(pairs, token) {
+  const want = String(token || "").toLowerCase();
+  const records = pairs.filter((pair) => {
+    if (!isPoolId(pair.pairAddress)) return false;
+    const base = String(pair.baseToken?.address || "").toLowerCase();
+    return !want || base === want;
+  });
   records.sort((a, b) => {
     const liquidity = Number(b.liquidity?.usd || 0) - Number(a.liquidity?.usd || 0);
     if (liquidity) return liquidity;
@@ -140,8 +151,8 @@ function rememberLaunchMarket(token, pairs) {
     peakLiquidityUsd: Math.max(previousPeak, liquidity),
     pairCreatedAt: winner.pairCreatedAt || existing.pair_created_at,
     status: classify(liquidity, Math.max(previousPeak, liquidity), threshold),
-    dextoolsUrl: winner.dextoolsUrl || dextoolsUrl(winner.pairAddress, token),
-    dexscreenerUrl: winner.dexscreenerUrl || `https://dexscreener.com/ethereum/${token}`,
+    dextoolsUrl: winner.dextoolsUrl || dextoolsUrl(winner.pairAddress),
+    dexscreenerUrl: `https://dexscreener.com/ethereum/${token}`,
   });
 }
 
@@ -152,15 +163,15 @@ export async function lookupLaunchMarket(address) {
   while (Date.now() < deadline) {
     try {
       pairs = await fetchTokenPairs(token, 6000, 1);
-      if (bestPair(pairs)) break;
+      if (bestPair(pairs, token)) break;
     } catch (error) {
       console.error("launch pair lookup", error.message);
     }
     if (Date.now() + 2500 >= deadline) break;
     await sleep(2500);
   }
-  const best = bestPair(pairs);
-  if (best) rememberLaunchMarket(token, pairs);
+  const best = bestPair(pairs, token);
+  if (best) rememberLaunchMarket(token, pairs.filter((pair) => String(pair.baseToken?.address || "").toLowerCase() === token));
   const saved = best?.pairAddress ? null : getToken(token);
   const pairAddress = best?.pairAddress || saved?.pair_address || "";
   const header = pairs.map((pair) => pair.info?.header).find((url) => typeof url === "string" && url.startsWith("https://")) || "";
@@ -169,10 +180,8 @@ export async function lookupLaunchMarket(address) {
   const website = Array.isArray(best?.info?.websites) ? best.info.websites[0]?.url || "" : "";
   return {
     pairAddress,
-    dextoolsUrl: pairAddress
-      ? `https://www.dextools.io/app/ether/pair-explorer/${pairAddress}`
-      : `https://www.dextools.io/app/ether/token/${token}`,
-    dexscreenerUrl: best?.url || `https://dexscreener.com/ethereum/${token}`,
+    dextoolsUrl: dextoolsUrl(pairAddress),
+    dexscreenerUrl: /^0x[a-f0-9]{40}$/.test(token) ? `https://dexscreener.com/ethereum/${token}` : "",
     imageUrl: header || "",
     logoUrl: typeof best?.info?.imageUrl === "string" ? best.info.imageUrl : "",
     pairCreatedAt: best?.pairCreatedAt ? Math.floor(Number(best.pairCreatedAt) / 1000) : null,
@@ -293,8 +302,8 @@ async function refreshMarketsNow(addresses) {
           peakLiquidityUsd: previousPeak,
           pairCreatedAt: existing.pair_created_at,
           status,
-          dextoolsUrl: dextoolsUrl(existing.pair_address, address),
-          dexscreenerUrl: existing.dexscreener_url || `https://dexscreener.com/ethereum/${address}`,
+          dextoolsUrl: dextoolsUrl(existing.pair_address),
+          dexscreenerUrl: `https://dexscreener.com/ethereum/${address}`,
         });
         updated += 1;
         continue;
@@ -315,8 +324,8 @@ async function refreshMarketsNow(addresses) {
         peakLiquidityUsd: peak,
         pairCreatedAt: winner.pairCreatedAt || existing.pair_created_at,
         status: classify(liquidity, peak, threshold),
-        dextoolsUrl: winner.dextoolsUrl || dextoolsUrl(winner.pairAddress, address),
-        dexscreenerUrl: winner.dexscreenerUrl || `https://dexscreener.com/ethereum/${address}`,
+        dextoolsUrl: winner.dextoolsUrl || dextoolsUrl(winner.pairAddress),
+        dexscreenerUrl: `https://dexscreener.com/ethereum/${address}`,
       });
       updated += 1;
     }
