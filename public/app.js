@@ -1134,10 +1134,10 @@ function viewSettings() {
       </div>
       <div class="field wide">
         <label>Buyer Tracker</label>
-        <p class="keys-note">This bot is only for buyer buys and sells. In Telegram, open @BotFather, send /newbot, set the name to Buyer Tracker, and pick a username that ends in bot. Paste that token here. Launch alerts stay on the other bot.</p>
-        <p class="keys-note">Anyone who presses Start in Buyer Tracker gets the same trade alerts. ${buyerAudience()}</p>
-        <p class="keys-note">${settings.buyerBotTokenSet ? "Buyer Tracker token saved. Paste a new one only if you want to replace it." : "No Buyer Tracker token saved yet."}</p>
-        <input name="buyerBotToken" type="password" autocomplete="off" spellcheck="false" placeholder="Buyer Tracker token from @BotFather" />
+        <p class="keys-note">Name: Buyer Tracker · @ETHBuyerTrackerBot. This bot only sends buyer buys and sells. Launch alerts stay on the other bot.</p>
+        <p class="keys-note">Anyone who presses Start in @ETHBuyerTrackerBot gets the same trade alerts. ${buyerAudience()}</p>
+        <p class="keys-note">${settings.buyerBotTokenSet ? "@ETHBuyerTrackerBot token saved. Paste a new one only if you want to replace it." : "Paste the @ETHBuyerTrackerBot token from @BotFather."}</p>
+        <input name="buyerBotToken" type="password" autocomplete="off" spellcheck="false" placeholder="@ETHBuyerTrackerBot token from @BotFather" />
         <input name="buyerChatId" autocomplete="off" spellcheck="false" placeholder="Chat id" value="${esc(fieldValue("buyerChatId"))}" />
       </div>
     </div>
