@@ -1074,6 +1074,14 @@ function telegramAudience() {
     .join(", ");
 }
 
+function buyerAudience() {
+  const chats = state.data.buyerChats || [];
+  if (!chats.length) return "Nobody else has pressed Start on Buyer Tracker yet.";
+  return chats
+    .map((chat) => (chat.username ? `${chat.name} (@${chat.username})` : chat.name))
+    .join(", ");
+}
+
 function viewSettings() {
   const settings = state.data.settings;
   const mode = rangeMode();
@@ -1124,9 +1132,18 @@ function viewSettings() {
         <input name="telegramBotToken" type="password" autocomplete="off" spellcheck="false" placeholder="Bot token from @BotFather" />
         <input name="telegramChatId" autocomplete="off" spellcheck="false" placeholder="Chat id" value="${esc(fieldValue("telegramChatId"))}" />
       </div>
+      <div class="field wide">
+        <label>Buyer Tracker</label>
+        <p class="keys-note">This bot is only for buyer buys and sells. In Telegram, open @BotFather, send /newbot, set the name to Buyer Tracker, and pick a username that ends in bot. Paste that token here. Launch alerts stay on the other bot.</p>
+        <p class="keys-note">Anyone who presses Start in Buyer Tracker gets the same trade alerts. ${buyerAudience()}</p>
+        <p class="keys-note">${settings.buyerBotTokenSet ? "Buyer Tracker token saved. Paste a new one only if you want to replace it." : "No Buyer Tracker token saved yet."}</p>
+        <input name="buyerBotToken" type="password" autocomplete="off" spellcheck="false" placeholder="Buyer Tracker token from @BotFather" />
+        <input name="buyerChatId" autocomplete="off" spellcheck="false" placeholder="Chat id" value="${esc(fieldValue("buyerChatId"))}" />
+      </div>
     </div>
     <label class="check"><input type="checkbox" name="fastMode" ${settings.fastMode === "1" ? "checked" : ""}/> Fast Mode: watch Dextools live pairs and paid boards, and alert only when the token is tied to a rival</label>
     <label class="check"><input type="checkbox" name="telegramAlerts" ${settings.telegramAlerts === "1" ? "checked" : ""}/> Send a Telegram card for each new launch and paid promotion</label>
+    <label class="check"><input type="checkbox" name="buyerAlerts" ${settings.buyerAlerts === "1" ? "checked" : ""}/> Send a Buyer Tracker message for each buy or sell</label>
     <label class="check"><input type="checkbox" name="autoScan" ${settings.autoScan === "1" ? "checked" : ""}/> Keep scanning enabled rivals on a timer</label>
     <label class="check"><input type="checkbox" name="requireFirstFunder" ${settings.requireFirstFunder === "1" ? "checked" : ""}/> Only keep a wallet when this rival is its first real ETH source</label>
       <p class="muted">Sample launches are funded with well under 1 ETH, so the maximum keeps treasury-sized transfers out of the waiting list. A wallet stays on the list when this rival is the first wallet that sent it real ETH. ${state.data.counts.ignored} wallets are hidden by that rule.</p>
@@ -1134,8 +1151,10 @@ function viewSettings() {
     <div class="actions">
       <button class="btn primary" type="submit">Save settings</button>
       <button class="btn" type="button" data-act="telegram-test">Send test message</button>
+      <button class="btn" type="button" data-act="buyer-test">Send buyer test</button>
       <button class="btn" type="button" data-act="clear-key">Remove Etherscan keys</button>
       <button class="btn" type="button" data-act="clear-telegram">Remove Telegram token</button>
+      <button class="btn" type="button" data-act="clear-buyer-token">Remove Buyer Tracker token</button>
       <button class="btn" type="button" data-act="recheck">Re-check hidden wallets</button>
     </div>
   </form>`;
@@ -1386,6 +1405,7 @@ async function saveSettings(form) {
   data.fastMode = form.fastMode.checked;
   data.requireFirstFunder = form.requireFirstFunder.checked;
   data.telegramAlerts = form.telegramAlerts.checked;
+  data.buyerAlerts = form.buyerAlerts.checked;
   const settings = state.data.settings;
   data.scanRangeMode = rangeMode();
   if (!data.scanEndDate) data.scanEndDate = settings.scanEndDate;
@@ -1706,6 +1726,29 @@ async function onClick(event) {
   if (act === "clear-telegram") {
     await api("/api/settings", { method: "PUT", body: { clearTelegramToken: true, telegramAlerts: false } });
     toast("Telegram token removed");
+    await load({ fresh: true });
+    return;
+  }
+  if (act === "buyer-test") {
+    const form = document.getElementById("settings");
+    const data = form ? Object.fromEntries(new FormData(form).entries()) : {};
+    try {
+      await api("/api/telegram/buyer-test", {
+        method: "POST",
+        body: {
+          buyerBotToken: data.buyerBotToken || "",
+          buyerChatId: data.buyerChatId || "",
+        },
+      });
+      toast("Buyer test sent");
+    } catch (error) {
+      toast(error.message);
+    }
+    return;
+  }
+  if (act === "clear-buyer-token") {
+    await api("/api/settings", { method: "PUT", body: { clearBuyerToken: true, buyerAlerts: false } });
+    toast("Buyer Tracker token removed");
     await load({ fresh: true });
     return;
   }

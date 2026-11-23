@@ -177,6 +177,10 @@ const DEFAULTS = {
   fastMode: "1",
   fastSince: "",
   buyerSeenBlock: "",
+  buyerBotToken: "",
+  buyerChatId: "",
+  buyerAlerts: "0",
+  buyerUpdateOffset: "0",
 };
 
 const SEED = [
@@ -247,6 +251,22 @@ export function removeTelegramChat(chatId) {
   db.prepare("DELETE FROM telegram_chats WHERE chat_id = ?").run(String(chatId));
 }
 
+export function saveBuyerChat({ chatId, name, username }) {
+  db.prepare(
+    `INSERT INTO buyer_chats(chat_id, name, username, started_at)
+     VALUES(?, ?, ?, ?)
+     ON CONFLICT(chat_id) DO UPDATE SET name = excluded.name, username = excluded.username`,
+  ).run(String(chatId), String(name || ""), String(username || ""), nowSec());
+}
+
+export function listBuyerChats() {
+  return db.prepare("SELECT chat_id, name, username, started_at FROM buyer_chats ORDER BY started_at").all();
+}
+
+export function removeBuyerChat(chatId) {
+  db.prepare("DELETE FROM buyer_chats WHERE chat_id = ?").run(String(chatId));
+}
+
 export function listBuyers() {
   return db.prepare("SELECT * FROM buyers ORDER BY id").all();
 }
@@ -285,22 +305,34 @@ export function listTrackedTokens() {
 }
 
 export function saveBuyerTrades(rows) {
-  if (!rows.length) return;
+  if (!rows.length) return [];
   const insert = db.prepare(
     `INSERT OR IGNORE INTO buyer_trades(
        buyer_id, token_address, tx_hash, block_number, timestamp, side, amount, market_cap
      ) VALUES(?, ?, ?, ?, ?, ?, ?, ?)`,
   );
+  const saved = [];
   db.exec("BEGIN");
   try {
     for (const row of rows) {
-      insert.run(row.buyerId, row.tokenAddress, row.txHash, row.blockNumber, row.timestamp, row.side, row.amount, row.marketCap);
+      const result = insert.run(
+        row.buyerId,
+        row.tokenAddress,
+        row.txHash,
+        row.blockNumber,
+        row.timestamp,
+        row.side,
+        row.amount,
+        row.marketCap,
+      );
+      if (Number(result.changes) > 0) saved.push(row);
     }
     db.exec("COMMIT");
   } catch (error) {
     db.exec("ROLLBACK");
     throw error;
   }
+  return saved;
 }
 
 export function listBuyerTrades(limit = 1000) {
@@ -430,7 +462,14 @@ db.exec(`
     name TEXT NOT NULL DEFAULT '',
     username TEXT NOT NULL DEFAULT '',
     started_at INTEGER NOT NULL
-  )
+  );
+
+  CREATE TABLE IF NOT EXISTS buyer_chats (
+    chat_id TEXT PRIMARY KEY,
+    name TEXT NOT NULL DEFAULT '',
+    username TEXT NOT NULL DEFAULT '',
+    started_at INTEGER NOT NULL
+  );
 `);
 
 db.exec(`
@@ -1113,9 +1152,16 @@ export function snapshot() {
       telegramBotToken: "",
       telegramBotTokenSet: Boolean(settings.telegramBotToken),
       telegramUpdateOffset: undefined,
+      buyerBotToken: "",
+      buyerBotTokenSet: Boolean(settings.buyerBotToken),
+      buyerUpdateOffset: undefined,
       liveSeenBlock: undefined,
     },
     telegramChats: listTelegramChats().map((chat) => ({
+      name: chat.name || chat.username || "Teammate",
+      username: chat.username,
+    })),
+    buyerChats: listBuyerChats().map((chat) => ({
       name: chat.name || chat.username || "Teammate",
       username: chat.username,
     })),

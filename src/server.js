@@ -26,7 +26,7 @@ import { startAthWatch } from "./gmgn.js";
 import { startPaidWatch } from "./paid.js";
 import { autoScanTick, cachedScanRange, decorateScan, enqueueScan, getJob, refreshOne, startLiveTail, stopScan, warmScanRange } from "./scanner.js";
 import { headBlock } from "./chain.js";
-import { sendTelegram, startTelegramInbox } from "./telegram.js";
+import { sendBuyerTest, sendTelegram, startBuyerInbox, startTelegramInbox } from "./telegram.js";
 import { ethToWei, normalizeAddress, nowSec, parseApiKeys, zonedUnix } from "./util.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -355,6 +355,30 @@ app.put("/api/settings", (req, res) => {
     }
     if (current.telegramAlerts !== "1") next.telegramSince = String(nowSec());
   }
+  if (body.buyerChatId != null) {
+    const chat = String(body.buyerChatId).trim();
+    if (chat && !/^-?\d{1,20}$/.test(chat)) {
+      return res.status(400).json({ error: "Buyer Tracker chat id must be the number from your Telegram chat." });
+    }
+    next.buyerChatId = chat;
+  }
+  if (body.clearBuyerToken) next.buyerBotToken = "";
+  else if (typeof body.buyerBotToken === "string" && body.buyerBotToken.trim()) {
+    const token = body.buyerBotToken.trim();
+    if (!/^\d{6,}:[A-Za-z0-9_-]{20,}$/.test(token)) {
+      return res.status(400).json({ error: "That does not look like a Buyer Tracker token from @BotFather." });
+    }
+    next.buyerBotToken = token;
+  }
+  if (body.buyerAlerts != null) next.buyerAlerts = body.buyerAlerts ? "1" : "0";
+  if (next.buyerAlerts === "1") {
+    const current = getSettings();
+    const token = next.buyerBotToken ?? current.buyerBotToken;
+    const chat = next.buyerChatId ?? current.buyerChatId;
+    if (!token || !chat) {
+      return res.status(400).json({ error: "Add a Buyer Tracker token and a chat id before turning buyer alerts on." });
+    }
+  }
   if (body.clearEtherscanKey) next.etherscanApiKey = "";
   else if (typeof body.etherscanApiKey === "string" && body.etherscanApiKey.trim()) {
     const keys = parseApiKeys(body.etherscanApiKey);
@@ -366,8 +390,27 @@ app.put("/api/settings", (req, res) => {
   }
   const saved = saveSettings(next);
   saved.telegramBotToken = "";
+  saved.buyerBotToken = "";
   saved.etherscanApiKey = "";
   res.json(saved);
+});
+
+app.post("/api/telegram/buyer-test", async (req, res) => {
+  const body = req.body || {};
+  const token = typeof body.buyerBotToken === "string" ? body.buyerBotToken.trim() : "";
+  const chatId = typeof body.buyerChatId === "string" ? body.buyerChatId.trim() : "";
+  if (token && !/^\d{6,}:[A-Za-z0-9_-]{20,}$/.test(token)) {
+    return res.status(400).json({ error: "That does not look like a Buyer Tracker token from @BotFather." });
+  }
+  if (chatId && !/^-?\d{1,20}$/.test(chatId)) {
+    return res.status(400).json({ error: "Buyer Tracker chat id must be the number from your Telegram chat." });
+  }
+  try {
+    await sendBuyerTest({ token, chatId });
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
 });
 
 app.post("/api/telegram/test", async (req, res) => {
@@ -409,6 +452,7 @@ app.listen(port, "127.0.0.1", () => {
   startAthWatch();
   startBuyerWatch();
   startTelegramInbox();
+  startBuyerInbox();
   warmScanRange().catch((error) => console.error("scan range", error.message));
   if (getSettings().live === "1") {
     const ids = listCompetitors()

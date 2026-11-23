@@ -1,22 +1,37 @@
 import { getSettings, listBuyers, listTrackedTokens, saveBuyerTrades, saveSettings } from "./db.js";
+import { notifyBuyerTrades } from "./telegram.js";
 import { sleep } from "./util.js";
 
-const RPC = "https://ethereum-rpc.publicnode.com";
+const RPCS = ["https://rpc.mevblocker.io", "https://rpc.flashbots.net", "https://eth.drpc.org"];
 const TRANSFER = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
 
 let started = false;
 
 async function rpc(method, params) {
-  const response = await fetch(RPC, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
-    signal: AbortSignal.timeout(8000),
-  });
-  if (!response.ok) throw new Error(`Buyer log request failed (${response.status})`);
-  const payload = await response.json();
-  if (payload.error) throw new Error(payload.error.message || "Buyer log request failed");
-  return payload.result;
+  let last = "Buyer log request failed";
+  for (const url of RPCS) {
+    try {
+      const response = await fetch(url, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+        signal: AbortSignal.timeout(8000),
+      });
+      if (!response.ok) {
+        last = `Buyer log request failed (${response.status})`;
+        continue;
+      }
+      const payload = await response.json();
+      if (payload.error) {
+        last = payload.error.message || last;
+        continue;
+      }
+      return payload.result;
+    } catch (error) {
+      last = error.message || last;
+    }
+  }
+  throw new Error(last);
 }
 
 function padTopic(address) {
@@ -116,6 +131,8 @@ async function readRange(buyers, tokens, fromBlock, toBlock) {
     if (!net) continue;
     const timestamp = await blockTime(row.blockNumber, times);
     if (!timestamp) continue;
+    const buyer = buyers.find((item) => item.id === row.buyerId);
+    const token = tokens.get(String(row.tokenAddress || "").toLowerCase());
     trades.push({
       buyerId: row.buyerId,
       tokenAddress: row.tokenAddress,
@@ -125,6 +142,10 @@ async function readRange(buyers, tokens, fromBlock, toBlock) {
       side: net > 0 ? "buy" : "sell",
       amount: Math.abs(net),
       marketCap: row.marketCap,
+      buyerLabel: buyer?.label || "",
+      buyerAddress: buyer?.address || "",
+      tokenSymbol: token?.symbol || "",
+      tokenName: token?.name || "",
     });
   }
   return trades;
@@ -145,8 +166,9 @@ async function tick() {
   const toBlock = Math.min(head, fromBlock + 5);
   const tokens = new Map(listTrackedTokens().map((token) => [String(token.address).toLowerCase(), token]));
   const trades = await readRange(buyers, tokens, fromBlock, toBlock);
-  saveBuyerTrades(trades);
+  const fresh = saveBuyerTrades(trades);
   saveSettings({ buyerSeenBlock: String(toBlock) });
+  if (fresh.length) notifyBuyerTrades(fresh);
 }
 
 export function startBuyerWatch() {
