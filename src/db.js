@@ -151,7 +151,7 @@ const DEFAULTS = {
   telegramUpdateOffset: "0",
   paidBaseline: "",
   liveSeenBlock: "",
-  fastMode: "0",
+  fastMode: "1",
   fastSince: "",
 };
 
