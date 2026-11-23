@@ -1135,7 +1135,7 @@ function viewSettings() {
       <div class="field wide">
         <label>Buyer Tracker</label>
         <p class="keys-note">Name: Buyer Tracker · @ETHBuyerTrackerBot. This bot only sends buyer buys and sells. Launch alerts stay on the other bot.</p>
-        <p class="keys-note">Anyone who presses Start in @ETHBuyerTrackerBot gets the same trade alerts. ${buyerAudience()}</p>
+        <p class="keys-note">Every person who presses Start in @ETHBuyerTrackerBot gets the same buy and sell alerts. The saved chat is included too. ${buyerAudience()}</p>
         <p class="keys-note">${settings.buyerBotTokenSet ? "@ETHBuyerTrackerBot token saved. Paste a new one only if you want to replace it." : "Paste the @ETHBuyerTrackerBot token from @BotFather."}</p>
         <input name="buyerBotToken" type="password" autocomplete="off" spellcheck="false" placeholder="@ETHBuyerTrackerBot token from @BotFather" />
         <input name="buyerChatId" autocomplete="off" spellcheck="false" placeholder="Chat id" value="${esc(fieldValue("buyerChatId"))}" />

@@ -203,67 +203,100 @@ async function sendBuyerTrades(trades) {
   const token = String(settings.buyerBotToken || "").trim();
   const chatIds = buyerDestinationChats(settings);
   if (!token || !chatIds.length || !trades?.length) return;
-  const offset = Number(settings.timezoneOffset);
-  const zone = Number.isFinite(offset) ? offset : 9;
+  const zone = buyerZone(settings);
   for (const trade of trades) {
-    const side = trade.side === "sell" ? "SELL" : "BUY";
-    const symbol = trade.tokenSymbol || "TOKEN";
-    const name = String(trade.tokenName || "").trim();
-    const who = trade.buyerLabel || trade.buyerAddress || "Buyer";
-    const when = Number(trade.timestamp) || 0;
-    const tx = String(trade.txHash || "").toLowerCase();
-    const txUrl = /^0x[a-f0-9]{64}$/.test(tx) ? `https://etherscan.io/tx/${tx}` : "";
-    const lines = [
-      `${side === "BUY" ? "🟢" : "🔴"} <b>${side}</b> · $${bold(symbol)}${name ? ` — ${esc(name)}` : ""}`,
-      `Buyer ${esc(who)}`,
-      when ? `Time ${esc(formatKst(when, zone))} UTC${zone >= 0 ? "+" : ""}${zone}` : "",
-      `MCap ${money(trade.marketCap)}`,
-      `Amount ${esc(amountText(trade.amount))}`,
-      lagLabel(when, nowSec()) ? `Detected in ${esc(lagLabel(when, nowSec()))}` : "",
-      trade.buyerAddress ? `<code>${esc(trade.buyerAddress)}</code>` : "",
-    ].filter(Boolean);
-    const buttons = txUrl ? { inline_keyboard: [[{ text: "Transaction", url: txUrl }]] } : { inline_keyboard: [] };
-    for (const chatId of chatIds) {
-      try {
-        await postTelegram(token, "sendMessage", {
-          chat_id: chatId,
-          text: lines.join("\n"),
-          parse_mode: "HTML",
-          disable_web_page_preview: true,
-          reply_markup: buttons,
-        });
-      } catch (error) {
-        if (/blocked|deactivated|chat not found/i.test(error.message)) removeBuyerChat(chatId);
-        console.error("buyer telegram", error.message);
-      }
-    }
+    const { text, buttons } = buyerMessage(trade, zone);
+    await deliverBuyerMessage(token, chatIds, text, buttons);
   }
 }
 
 export async function sendBuyerTest(override = {}) {
   const settings = getSettings();
   const token = String(override.token || settings.buyerBotToken || "").trim();
-  const chatId = String(override.chatId || settings.buyerChatId || "").trim();
-  if (!token || !chatId) throw new Error("Add a Buyer Tracker token and a chat id first.");
-  await postTelegram(token, "sendMessage", {
-    chat_id: chatId,
-    text: [
-      "🟢 <b>BUY</b> · $<b>SYMBOL</b> — Token name",
-      "Buyer Wallet label",
-      "Time 11/23 21:25:00 UTC+9",
-      "MCap $120.0K",
-      "Amount 2.50M",
-      "Detected in 8s",
-    ].join("\n"),
-    parse_mode: "HTML",
-    disable_web_page_preview: true,
-    reply_markup: { inline_keyboard: [[{ text: "Transaction", url: "https://etherscan.io" }]] },
-  });
+  const chatIds = buyerDestinationChats(settings, override.chatId);
+  if (!token || !chatIds.length) throw new Error("Add a Buyer Tracker token and a chat id first.");
+  const zone = buyerZone(settings);
+  const when = nowSec() - 8;
+  const { text, buttons } = buyerMessage(
+    {
+      side: "buy",
+      tokenSymbol: "SYMBOL",
+      tokenName: "Token name",
+      buyerLabel: "Wallet label",
+      marketCap: 120000,
+      amount: 2500000,
+      timestamp: when,
+      sample: true,
+    },
+    zone,
+  );
+  const { sent, lastError } = await deliverBuyerMessage(token, chatIds, text, buttons);
+  if (!sent) throw lastError || new Error("Could not reach Telegram.");
 }
 
-function buyerDestinationChats(settings) {
+function buyerZone(settings) {
+  const offset = Number(settings.timezoneOffset);
+  return Number.isFinite(offset) ? offset : 9;
+}
+
+function buyerMessage(trade, zone) {
+  const side = trade.side === "sell" ? "SELL" : "BUY";
+  const symbol = trade.tokenSymbol || "TOKEN";
+  const name = String(trade.tokenName || "").trim();
+  const who = trade.buyerLabel || trade.buyerAddress || "Buyer";
+  const when = Number(trade.timestamp) || 0;
+  const zoneLabel = `UTC${zone >= 0 ? "+" : ""}${zone}`;
+  const lag = lagLabel(when, nowSec());
+  const tx = String(trade.txHash || "").toLowerCase();
+  const token = String(trade.tokenAddress || "").toLowerCase();
+  const txUrl = /^0x[a-f0-9]{64}$/.test(tx) ? `https://etherscan.io/tx/${tx}` : "";
+  const chartUrl = isAddress(token) ? `https://dexscreener.com/ethereum/${token}` : "";
+  const lines = [
+    trade.sample ? "ℹ️ <b>SAMPLE ALERT</b>" : "",
+    `${side === "BUY" ? "🟢" : "🔴"} <b>${side}</b> · $${bold(symbol)}${name ? ` — ${esc(name)}` : ""}`,
+    `💰 MCap ${money(trade.marketCap)} · 📦 Amount ${esc(amountText(trade.amount))}`,
+    when ? `🕐 ${esc(formatKst(when, zone))} ${zoneLabel}` : "",
+    lag ? `⚡️ Detected in ${esc(lag)}` : "",
+    `👤 ${esc(who)}`,
+    trade.buyerAddress ? `<code>${esc(trade.buyerAddress)}</code>` : "",
+  ].filter(Boolean);
+  const buttons = [
+    txUrl ? { text: "🔗 Transaction", url: txUrl } : null,
+    chartUrl ? { text: "📈 DexScreener", url: chartUrl } : null,
+    trade.sample ? { text: "🔗 Transaction", url: "https://etherscan.io" } : null,
+  ].filter(Boolean);
+  return {
+    text: lines.join("\n"),
+    buttons: { inline_keyboard: buttons.length ? [buttons] : [] },
+  };
+}
+
+async function deliverBuyerMessage(token, chatIds, text, buttons) {
+  let sent = 0;
+  let lastError = null;
+  for (const chatId of chatIds) {
+    try {
+      await postTelegram(token, "sendMessage", {
+        chat_id: chatId,
+        text,
+        parse_mode: "HTML",
+        disable_web_page_preview: true,
+        reply_markup: buttons,
+      });
+      sent += 1;
+    } catch (error) {
+      lastError = error;
+      if (/blocked|deactivated|chat not found/i.test(error.message)) removeBuyerChat(chatId);
+      console.error("buyer telegram", error.message);
+    }
+  }
+  return { sent, lastError };
+}
+
+function buyerDestinationChats(settings, extra = "") {
   const ids = new Set();
   if (settings.buyerChatId) ids.add(String(settings.buyerChatId));
+  if (extra) ids.add(String(extra));
   for (const chat of listBuyerChats()) ids.add(String(chat.chat_id));
   return [...ids];
 }
@@ -382,7 +415,7 @@ async function readBuyerStarts() {
       body: JSON.stringify({
         offset: offset || undefined,
         timeout: 20,
-        allowed_updates: ["message"],
+        allowed_updates: ["message", "my_chat_member"],
       }),
       signal: AbortSignal.timeout(25000),
     });
@@ -399,22 +432,52 @@ async function readBuyerStarts() {
   let next = offset;
   for (const update of data.result || []) {
     next = update.update_id + 1;
-    const message = update.message;
-    const text = String(message?.text || "");
-    if (!message?.chat?.id || !text.startsWith("/start")) continue;
-    const name = [message.from?.first_name, message.from?.last_name].filter(Boolean).join(" ");
-    saveBuyerChat({
-      chatId: message.chat.id,
-      name,
-      username: message.from?.username || "",
-    });
+    const started = buyerStartFromUpdate(update);
+    if (!started) continue;
+    const already = listBuyerChats().some((chat) => String(chat.chat_id) === String(started.chatId));
+    saveBuyerChat(started);
     console.log("Buyer Tracker subscriber added");
+    if (already) continue;
     await postTelegram(token, "sendMessage", {
-      chat_id: message.chat.id,
-      text: "You're on the Buyer Tracker list. Buys and sells from the buyer wallets will show up in this chat.",
+      chat_id: started.chatId,
+      text: [
+        "👋 <b>Buyer Tracker</b>",
+        "",
+        "You're subscribed. Every buy and sell from the watched wallets will arrive in this chat.",
+        "",
+        "🟢 Buy  ·  🔴 Sell",
+        "💰 Market cap  ·  📦 Amount  ·  🕐 UTC+9",
+      ].join("\n"),
+      parse_mode: "HTML",
+      disable_web_page_preview: true,
     }).catch((error) => console.error("buyer welcome", error.message));
   }
   if (next !== offset) saveSettings({ buyerUpdateOffset: String(next) });
+}
+
+function buyerStartFromUpdate(update) {
+  const message = update.message;
+  const text = String(message?.text || "");
+  if (message?.chat?.id && text.startsWith("/start")) {
+    return buyerPerson(message.chat.id, message.from);
+  }
+  const member = update.my_chat_member;
+  const status = member?.new_chat_member?.status;
+  if (!member?.chat?.id) return null;
+  if (status === "kicked" || status === "left") {
+    removeBuyerChat(member.chat.id);
+    return null;
+  }
+  if (status === "member" || status === "administrator") return buyerPerson(member.chat.id, member.from);
+  return null;
+}
+
+function buyerPerson(chatId, from) {
+  return {
+    chatId,
+    name: [from?.first_name, from?.last_name].filter(Boolean).join(" "),
+    username: from?.username || "",
+  };
 }
 
 async function cardImage(card) {
