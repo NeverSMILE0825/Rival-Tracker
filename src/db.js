@@ -117,6 +117,29 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_tokens_status ON tokens(status);
   CREATE INDEX IF NOT EXISTS idx_token_pairs_token ON token_pairs(token_address);
   CREATE INDEX IF NOT EXISTS idx_deployers_status ON deployers(status);
+
+  CREATE TABLE IF NOT EXISTS buyers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    address TEXT NOT NULL UNIQUE,
+    label TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS buyer_trades (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    buyer_id INTEGER NOT NULL,
+    token_address TEXT NOT NULL,
+    tx_hash TEXT NOT NULL,
+    block_number INTEGER NOT NULL,
+    timestamp INTEGER NOT NULL,
+    side TEXT NOT NULL,
+    amount REAL,
+    market_cap REAL,
+    UNIQUE(buyer_id, token_address, tx_hash)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_buyer_trades_time ON buyer_trades(timestamp DESC);
 `);
 
 const DEFAULTS = {
@@ -153,6 +176,7 @@ const DEFAULTS = {
   liveSeenBlock: "",
   fastMode: "1",
   fastSince: "",
+  buyerSeenBlock: "",
 };
 
 const SEED = [
@@ -221,6 +245,77 @@ export function listTelegramChats() {
 
 export function removeTelegramChat(chatId) {
   db.prepare("DELETE FROM telegram_chats WHERE chat_id = ?").run(String(chatId));
+}
+
+export function listBuyers() {
+  return db.prepare("SELECT * FROM buyers ORDER BY id").all();
+}
+
+export function getBuyer(id) {
+  return db.prepare("SELECT * FROM buyers WHERE id = ?").get(id);
+}
+
+export function createBuyer({ address, label }) {
+  const ts = nowSec();
+  const result = db
+    .prepare("INSERT INTO buyers(address, label, created_at, updated_at) VALUES(?, ?, ?, ?)")
+    .run(address, label || "", ts, ts);
+  return getBuyer(Number(result.lastInsertRowid));
+}
+
+export function updateBuyer(id, fields) {
+  const current = getBuyer(id);
+  if (!current) return null;
+  db.prepare("UPDATE buyers SET address = ?, label = ?, updated_at = ? WHERE id = ?").run(
+    fields.address || current.address,
+    fields.label != null ? fields.label : current.label,
+    nowSec(),
+    id,
+  );
+  return getBuyer(id);
+}
+
+export function deleteBuyer(id) {
+  db.prepare("DELETE FROM buyer_trades WHERE buyer_id = ?").run(id);
+  db.prepare("DELETE FROM buyers WHERE id = ?").run(id);
+}
+
+export function listTrackedTokens() {
+  return db.prepare("SELECT address, symbol, name, decimals, market_cap FROM tokens").all();
+}
+
+export function saveBuyerTrades(rows) {
+  if (!rows.length) return;
+  const insert = db.prepare(
+    `INSERT OR IGNORE INTO buyer_trades(
+       buyer_id, token_address, tx_hash, block_number, timestamp, side, amount, market_cap
+     ) VALUES(?, ?, ?, ?, ?, ?, ?, ?)`,
+  );
+  db.exec("BEGIN");
+  try {
+    for (const row of rows) {
+      insert.run(row.buyerId, row.tokenAddress, row.txHash, row.blockNumber, row.timestamp, row.side, row.amount, row.marketCap);
+    }
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+export function listBuyerTrades(limit = 1000) {
+  return db
+    .prepare(
+      `SELECT t.id, t.buyer_id, t.token_address, t.tx_hash, t.block_number, t.timestamp, t.side, t.amount, t.market_cap,
+              b.address AS buyer_address, b.label AS buyer_label,
+              k.symbol AS token_symbol, k.name AS token_name
+       FROM buyer_trades t
+       JOIN buyers b ON b.id = t.buyer_id
+       LEFT JOIN tokens k ON k.address = t.token_address
+       ORDER BY t.timestamp DESC, t.id DESC
+       LIMIT ?`,
+    )
+    .all(limit);
 }
 
 export function listCompetitors() {
@@ -316,6 +411,12 @@ if (!tokenColumns.some((column) => column.name === "logo_url")) {
 }
 if (!tokenColumns.some((column) => column.name === "banner_url")) {
   db.exec("ALTER TABLE tokens ADD COLUMN banner_url TEXT");
+}
+if (!tokenColumns.some((column) => column.name === "ath_market_cap")) {
+  db.exec("ALTER TABLE tokens ADD COLUMN ath_market_cap REAL");
+}
+if (!tokenColumns.some((column) => column.name === "ath_checked_at")) {
+  db.exec("ALTER TABLE tokens ADD COLUMN ath_checked_at INTEGER");
 }
 
 const pairColumns = db.prepare("PRAGMA table_info(token_pairs)").all();
@@ -614,6 +715,31 @@ export function listPaidBannerTargets() {
        GROUP BY t.address`,
     )
     .all();
+}
+
+export function listTokensForAth(limit = 20) {
+  const now = nowSec();
+  return db
+    .prepare(
+      `SELECT address FROM tokens
+       WHERE ath_checked_at IS NULL
+          OR (COALESCE(created_at, 0) >= ? AND ath_checked_at < ?)
+          OR ath_checked_at < ?
+       ORDER BY CASE WHEN ath_checked_at IS NULL THEN 0 ELSE 1 END,
+                COALESCE(created_at, 0) DESC
+       LIMIT ?`,
+    )
+    .all(now - 6 * 3600, now - 10 * 60, now - 6 * 3600, limit)
+    .map((row) => row.address);
+}
+
+export function saveTokenAth(address, ath) {
+  const value = Number(ath);
+  db.prepare("UPDATE tokens SET ath_market_cap = ?, ath_checked_at = ? WHERE address = ?").run(
+    Number.isFinite(value) && value > 0 ? value : null,
+    nowSec(),
+    String(address).toLowerCase(),
+  );
 }
 
 export function updateTokenMarket(address, fields) {
@@ -961,6 +1087,7 @@ export function snapshot() {
     rugged: Number(db.prepare("SELECT COUNT(*) AS n FROM tokens WHERE status = 'rugged'").get().n),
     unlisted: Number(db.prepare("SELECT COUNT(*) AS n FROM tokens WHERE status = 'unlisted'").get().n),
     tokens: Number(db.prepare("SELECT COUNT(*) AS n FROM tokens").get().n),
+    buyers: Number(db.prepare("SELECT COUNT(*) AS n FROM buyers").get().n),
     liquidity: Number(db.prepare("SELECT COALESCE(SUM(liquidity_usd), 0) AS n FROM tokens WHERE status = 'live'").get().n),
     unseen,
   };
@@ -971,6 +1098,8 @@ export function snapshot() {
   const extra = etherscanKeys.length > preview.length ? ` +${etherscanKeys.length - preview.length} more` : "";
   return {
     competitors,
+    buyers: listBuyers(),
+    buyerTrades: listBuyerTrades(),
     deployers,
     tokens,
     events,

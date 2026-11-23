@@ -2,9 +2,12 @@ import express from "express";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  createBuyer,
   createCompetitor,
+  deleteBuyer,
   deleteCompetitor,
   deployerDetail,
+  getBuyer,
   getCompetitor,
   getSettings,
   listCompetitors,
@@ -13,10 +16,13 @@ import {
   requeueIgnored,
   saveSettings,
   snapshot,
+  updateBuyer,
   updateCompetitor,
 } from "./db.js";
 import { refreshMarkets, startLiveMarkets } from "./market.js";
+import { startBuyerWatch } from "./buyers.js";
 import { startFastWatch } from "./fast.js";
+import { startAthWatch } from "./gmgn.js";
 import { startPaidWatch } from "./paid.js";
 import { autoScanTick, cachedScanRange, decorateScan, enqueueScan, getJob, refreshOne, startLiveTail, stopScan, warmScanRange } from "./scanner.js";
 import { headBlock } from "./chain.js";
@@ -106,6 +112,48 @@ app.patch("/api/competitors/:id", (req, res) => {
     }
     res.status(500).json({ error: error.message });
   }
+});
+
+app.post("/api/buyers", (req, res) => {
+  const address = normalizeAddress(req.body.address);
+  const label = String(req.body.label || "").trim();
+  if (!address) return res.status(400).json({ error: "Enter a valid Ethereum address." });
+  try {
+    res.status(201).json(createBuyer({ address, label }));
+  } catch (error) {
+    if (String(error.message).includes("UNIQUE")) {
+      return res.status(409).json({ error: "That address is already in the buyer list." });
+    }
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.patch("/api/buyers/:id", (req, res) => {
+  const id = Number(req.params.id);
+  const current = getBuyer(id);
+  if (!current) return res.status(404).json({ error: "Buyer not found." });
+  const fields = {};
+  if (req.body.address != null) {
+    const address = normalizeAddress(req.body.address);
+    if (!address) return res.status(400).json({ error: "Enter a valid Ethereum address." });
+    fields.address = address;
+  }
+  if (req.body.label != null) fields.label = String(req.body.label).trim();
+  try {
+    res.json(updateBuyer(id, fields));
+  } catch (error) {
+    if (String(error.message).includes("UNIQUE")) {
+      return res.status(409).json({ error: "That address is already in the buyer list." });
+    }
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.delete("/api/buyers/:id", (req, res) => {
+  const id = Number(req.params.id);
+  if (!getBuyer(id)) return res.status(404).json({ error: "Buyer not found." });
+  deleteBuyer(id);
+  res.json({ ok: true });
 });
 
 app.delete("/api/competitors/:id", (req, res) => {
@@ -358,6 +406,8 @@ app.listen(port, "127.0.0.1", () => {
   console.log(`Rival Tracker running at http://127.0.0.1:${port}`);
   startPaidWatch();
   startFastWatch();
+  startAthWatch();
+  startBuyerWatch();
   startTelegramInbox();
   warmScanRange().catch((error) => console.error("scan range", error.message));
   if (getSettings().live === "1") {

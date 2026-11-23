@@ -13,10 +13,11 @@ const state = {
   scanRangeMode: "",
   settingsDraft: null,
   pageSize: 50,
-  pages: { waiting: 1, tokens: 1 },
+  pages: { waiting: 1, tokens: 1, buyers: 1 },
+  buyerFilter: "all",
   mainV4: true,
   paidOnly: false,
-  sort: { tokens: { key: "launched", dir: "desc" } },
+  sort: { tokens: { key: "launched", dir: "desc" }, buyers: { key: "time", dir: "desc" } },
 };
 
 const TITLES = {
@@ -24,6 +25,7 @@ const TITLES = {
   waiting: ["Waiting to launch", "Fresh wallets that received ETH from a rival and have not deployed a token."],
   tokens: ["Tokens", "Tokens deployed by those funded wallets, with pool, liquidity, and Dextools."],
   rivals: ["Rivals", "Add, rename, or remove the wallets you want to follow."],
+  buyers: ["Buyers", "Wallets to follow when they buy or sell a rival token. Tracking runs on its own and does not wait on launch detection."],
   settings: ["Settings", "Choose the start and end time, or a block range, how much ETH counts as funding, and when a pool counts as rugged."],
 };
 
@@ -99,6 +101,12 @@ function formatAge(unix) {
   if (hours > 0) return `${hours}h ${minutes % 60}m`;
   if (minutes > 0) return `${minutes}m`;
   return `${seconds}s`;
+}
+
+function exactUsd(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number <= 0) return "";
+  return `$${number.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
 function formatUsd(value) {
@@ -227,6 +235,7 @@ function paintNav() {
     ["waiting", "Waiting", counts.waiting],
     ["tokens", "Tokens", counts.tokens],
     ["rivals", "Rivals", counts.rivals],
+    ["buyers", "Buyers", counts.buyers || 0],
     ["settings", "Settings", ""],
   ];
   const html = items
@@ -309,6 +318,7 @@ function paintView() {
     waiting: viewWallets,
     tokens: viewTokens,
     rivals: viewRivals,
+    buyers: viewBuyers,
     settings: viewSettings,
   }[state.route]();
   const key = [
@@ -326,6 +336,10 @@ function paintView() {
     state.paidOnly ? "paid" : "any",
     state.sort[state.route]?.key || "",
     state.sort[state.route]?.dir || "",
+    state.buyerFilter,
+    (state.data.buyers || []).map((buyer) => `${buyer.id}:${buyer.label}:${buyer.address}`).join(","),
+    state.data.buyerTrades?.[0]?.id || 0,
+    (state.data.buyerTrades || []).length,
     (state.data.telegramChats || []).map((chat) => `${chat.name}:${chat.username || ""}`).join(","),
   ].join("|");
   const y = window.scrollY;
@@ -478,6 +492,7 @@ function viewTokens() {
         { label: `Launched (${zoneLabel()})`, key: "launched", type: "number" },
         { label: "Liquidity", key: "liquidity", type: "number", align: "right" },
         { label: "MCap", key: "mcap", type: "number", align: "right" },
+        { label: "ATH", key: "ath", type: "number", align: "right" },
         { label: "24h", key: "change", type: "number", align: "right" },
         { label: "Total tx", key: "txTotal", type: "number", align: "right" },
         { label: "24h tx", key: "tx24h", type: "number", align: "right" },
@@ -617,6 +632,7 @@ function tokenRow(token) {
     <td>${esc(formatKst(token.launched))}</td>
     <td class="num">${esc(formatUsd(token.liquidity))}</td>
     <td class="num">${esc(formatUsd(token.mcap))}</td>
+    <td class="num" title="${esc(exactUsd(token.ath))}">${esc(formatUsd(token.ath))}</td>
     <td class="num">${changeCell(token.change)}</td>
     <td class="num">${esc(formatCount(token.txTotal))}</td>
     <td class="num">${esc(formatCount(token.tx24h))}</td>
@@ -662,6 +678,7 @@ function displayTokenRows() {
         launched: pair.pair_created_at || token.pair_created_at || token.created_at || null,
         liquidity: numberOrNull(pair.liquidity_usd),
         mcap: numberOrNull(pair.market_cap),
+        ath: numberOrNull(token.ath_market_cap),
         change: numberOrNull(pair.price_change_24h),
         tx24h: numberOrNull(pair.txns_24h),
         txTotal: countedTx(token),
@@ -716,6 +733,7 @@ function sortValue(row, key) {
   if (key === "launched") return numberOrNull(row.launched);
   if (key === "liquidity") return row.liquidity;
   if (key === "mcap") return row.mcap;
+  if (key === "ath") return row.ath;
   if (key === "change") return row.change;
   if (key === "txTotal") return row.txTotal;
   if (key === "tx24h") return row.tx24h;
@@ -743,7 +761,10 @@ function dataTable(columns, rows, render, emptyTitle, emptyBody) {
   const defs = columns.map((column) => (typeof column === "string" ? { label: column } : column));
   const page = paged(rows);
   if (!page.count) {
-    return `<div class="table-panel"><div class="empty"><h3>${esc(emptyTitle)}</h3><p>${esc(emptyBody)}</p></div></div>`;
+    return `<div class="table-panel">
+      <div class="table-scroll"><table><thead><tr>${defs.map(headerCell).join("")}</tr></thead></table></div>
+      <div class="empty"><h3>${esc(emptyTitle)}</h3><p>${esc(emptyBody)}</p></div>
+    </div>`;
   }
   return `<div class="table-panel">
     <div class="table-scroll">
@@ -856,6 +877,107 @@ function filteredTokens() {
       const blob = `${token.name} ${token.symbol} ${token.address} ${rivalLabel(token.fundings)}`.toLowerCase();
       return blob.includes(query);
     });
+}
+
+function formatAmount(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number <= 0) return "—";
+  if (number >= 1e9) return `${(number / 1e9).toFixed(2)}B`;
+  if (number >= 1e6) return `${(number / 1e6).toFixed(2)}M`;
+  if (number >= 1e3) return `${(number / 1e3).toFixed(2)}K`;
+  if (number >= 1) return number.toLocaleString(undefined, { maximumFractionDigits: 2 });
+  if (number >= 0.0001) return number.toFixed(4);
+  return number.toPrecision(2);
+}
+
+function buyerName(buyer) {
+  return buyer.label || "No label";
+}
+
+function viewBuyers() {
+  const buyers = state.data.buyers || [];
+  const options = [`<option value="all">All buyers</option>`]
+    .concat(buyers.map((buyer) => `<option value="${buyer.id}" ${String(state.buyerFilter) === String(buyer.id) ? "selected" : ""}>${esc(buyerName(buyer))}</option>`))
+    .join("");
+  return `
+    <div class="toolbar">
+      <button class="btn primary" data-act="add-buyer">Add buyer</button>
+      <select class="search" data-act="buyer-filter" style="width:180px">${options}</select>
+      <input class="search" data-act="query" placeholder="Search token, buyer, transaction" value="${esc(state.query)}" />
+    </div>
+    <div class="rivals">
+      ${buyers.length ? buyers.map(buyerCard).join("") : `<div class="card empty"><h3>No buyers yet</h3><p>Add a wallet to record when it buys or sells a rival token.</p></div>`}
+    </div>
+    <div class="section-label section-gap">Trades</div>
+    ${dataTable(
+      [
+        { label: `Time (${zoneLabel()})`, key: "time", type: "number" },
+        { label: "Type", key: "type", type: "text" },
+        { label: "MCap", key: "mcap", type: "number", align: "right" },
+        { label: "Amount", key: "amount", type: "number", align: "right" },
+        { label: "Token", key: "token", type: "text" },
+        { label: "Buyer", key: "buyer", type: "text" },
+        { label: "Transaction", key: "tx", type: "text" },
+      ],
+      sortBuyerTrades(filteredBuyerTrades()),
+      buyerTradeRow,
+      "No trades yet",
+      "Buys and sells of rival tokens show up here as new blocks arrive.",
+    )}`;
+}
+
+function buyerCard(buyer) {
+  return `<article class="card buyer">
+    <div>
+      <div class="name">${esc(buyerName(buyer))}</div>
+      <div class="addr">${esc(buyer.address)} <button class="icon-btn" data-act="copy" data-value="${esc(buyer.address)}">copy</button></div>
+    </div>
+    <div class="mini-actions">
+      <button class="btn" data-act="edit-buyer" data-id="${buyer.id}">Edit</button>
+      <button class="btn danger" data-act="remove-buyer" data-id="${buyer.id}">Delete</button>
+    </div>
+  </article>`;
+}
+
+function filteredBuyerTrades() {
+  const query = state.query.trim().toLowerCase();
+  return (state.data.buyerTrades || []).filter((trade) => {
+    if (state.buyerFilter !== "all" && String(trade.buyer_id) !== String(state.buyerFilter)) return false;
+    if (!query) return true;
+    const blob = `${trade.token_symbol || ""} ${trade.token_name || ""} ${trade.token_address} ${trade.buyer_label || ""} ${trade.buyer_address} ${trade.tx_hash} ${trade.side}`.toLowerCase();
+    return blob.includes(query);
+  });
+}
+
+function buyerTradeSortValue(row, key) {
+  if (key === "time") return numberOrNull(row.timestamp);
+  if (key === "type") return row.side || "";
+  if (key === "mcap") return numberOrNull(row.market_cap);
+  if (key === "amount") return numberOrNull(row.amount);
+  if (key === "token") return row.token_symbol || row.token_name || "";
+  if (key === "buyer") return row.buyer_label || row.buyer_address || "";
+  if (key === "tx") return row.tx_hash || "";
+  return "";
+}
+
+function sortBuyerTrades(rows) {
+  const sort = state.sort.buyers || { key: "time", dir: "desc" };
+  const factor = sort.dir === "asc" ? 1 : -1;
+  return [...rows].sort((a, b) => compareSort(buyerTradeSortValue(a, sort.key), buyerTradeSortValue(b, sort.key), factor));
+}
+
+function buyerTradeRow(trade) {
+  const token = trade.token_symbol || trade.token_name || shortAddr(trade.token_address);
+  const name = trade.token_name && trade.token_symbol ? ` <span class="muted">(${esc(trade.token_name)})</span>` : "";
+  return `<tr>
+    <td>${esc(formatKst(trade.timestamp))}</td>
+    <td><span class="pill ${trade.side === "buy" ? "live" : "rugged"}">${esc(trade.side)}</span></td>
+    <td class="num">${esc(formatUsd(trade.market_cap))}</td>
+    <td class="num" title="${esc(trade.amount)}">${esc(formatAmount(trade.amount))}</td>
+    <td><b>${esc(token)}</b>${name}</td>
+    <td>${esc(trade.buyer_label || shortAddr(trade.buyer_address))}</td>
+    <td class="links"><a class="link-pill" href="https://etherscan.io/tx/${esc(trade.tx_hash)}" target="_blank" rel="noreferrer">Etherscan</a></td>
+  </tr>`;
 }
 
 function viewRivals() {
@@ -1027,7 +1149,16 @@ function paintModal() {
   }
   if (root.dataset.mode === state.modal.mode && root.dataset.id === String(state.modal.id || "")) return;
   const modal = state.modal;
-  if (modal.mode === "confirm") {
+  if (modal.mode === "buyer-add" || modal.mode === "buyer-edit") {
+    const buyer = modal.buyer || { label: "", address: "" };
+    root.innerHTML = `<div class="modal-back"><form class="modal" id="buyer-form">
+      <h3>${modal.mode === "buyer-edit" ? "Edit buyer" : "Add buyer"}</h3>
+      <div class="field"><label>Label <span class="muted">(optional)</span></label><input name="label" value="${esc(buyer.label || "")}" /></div>
+      <div class="field"><label>Address</label><input name="address" value="${esc(buyer.address || "")}" required spellcheck="false" /></div>
+      <div class="err" id="form-err"></div>
+      <div class="actions"><button class="btn" type="button" data-act="close">Cancel</button><button class="btn primary" type="submit">Save</button></div>
+    </form></div>`;
+  } else if (modal.mode === "confirm") {
     root.innerHTML = `<div class="modal-back"><form class="modal" id="confirm">
       <h3>${esc(modal.title)}</h3>
       <p class="muted">${esc(modal.body)}</p>
@@ -1118,6 +1249,7 @@ function paintDrawer() {
       <div class="metrics">
         ${metric("Price", formatPrice(token.price_usd))}
         ${metric("MCap", formatUsd(token.market_cap))}
+        ${metric("ATH", formatUsd(token.ath_market_cap))}
         ${metric("Liquidity", formatUsd(token.liquidity_usd))}
         ${metric("24h", formatChange(token.price_change_24h), moveTone)}
       </div>
@@ -1189,6 +1321,11 @@ function onInput(event) {
       input.setSelectionRange(input.value.length, input.value.length);
     }
   }
+  if (event.target.dataset.act === "buyer-filter") {
+    state.buyerFilter = event.target.value;
+    resetPage();
+    paintView();
+  }
   if (event.target.dataset.act === "rival") {
     state.rival = event.target.value;
     resetPage();
@@ -1219,6 +1356,7 @@ async function onSubmit(event) {
   const form = event.target;
   if (form.id === "settings") return saveSettings(form);
   if (form.id === "rival-form") return saveRival(form);
+  if (form.id === "buyer-form") return saveBuyer(form);
   if (form.id === "confirm") return runConfirm();
 }
 
@@ -1274,6 +1412,24 @@ async function saveSettings(form) {
   }
 }
 
+async function saveBuyer(form) {
+  const data = Object.fromEntries(new FormData(form).entries());
+  try {
+    if (state.modal.mode === "buyer-edit") {
+      await api(`/api/buyers/${state.modal.id}`, { method: "PATCH", body: data });
+    } else {
+      await api("/api/buyers", { method: "POST", body: data });
+    }
+    state.modal = null;
+    document.getElementById("modal").dataset.mode = "";
+    toast("Buyer saved");
+    await load({ fresh: true });
+  } catch (error) {
+    const node = document.getElementById("form-err");
+    if (node) node.textContent = error.message;
+  }
+}
+
 async function saveRival(form) {
   const data = Object.fromEntries(new FormData(form).entries());
   data.color = state.modal.color || state.modal.rival?.color || COLORS[0];
@@ -1298,10 +1454,11 @@ async function runConfirm() {
   const modal = state.modal;
   try {
     if (modal.kind === "delete") await api(`/api/competitors/${modal.id}`, { method: "DELETE" });
+    if (modal.kind === "delete-buyer") await api(`/api/buyers/${modal.id}`, { method: "DELETE" });
     if (modal.kind === "purge") await api("/api/scan", { method: "POST", body: { id: modal.id, purge: true, rewind: true } });
     state.modal = null;
     document.getElementById("modal").dataset.mode = "";
-    toast(modal.kind === "delete" ? "Rival deleted" : "Rescan started");
+    toast(modal.kind === "delete" ? "Rival deleted" : modal.kind === "delete-buyer" ? "Buyer deleted" : "Rescan started");
     await load({ fresh: true });
   } catch (error) {
     toast(error.message);
@@ -1396,6 +1553,32 @@ async function onClick(event) {
   if (act === "copy") {
     await navigator.clipboard.writeText(button.dataset.value);
     toast("Copied");
+    return;
+  }
+  if (act === "add-buyer") {
+    state.modal = { mode: "buyer-add" };
+    paintModal();
+    return;
+  }
+  if (act === "edit-buyer") {
+    const buyer = (state.data.buyers || []).find((item) => item.id === Number(button.dataset.id));
+    if (!buyer) return;
+    state.modal = { mode: "buyer-edit", id: buyer.id, buyer };
+    paintModal();
+    return;
+  }
+  if (act === "remove-buyer") {
+    const buyer = (state.data.buyers || []).find((item) => item.id === Number(button.dataset.id));
+    if (!buyer) return;
+    state.modal = {
+      mode: "confirm",
+      kind: "delete-buyer",
+      id: buyer.id,
+      title: `Delete ${buyerName(buyer)}?`,
+      body: "The wallet leaves the list, and the trades saved for it are removed.",
+      confirm: "Delete",
+    };
+    paintModal();
     return;
   }
   if (act === "add") {
