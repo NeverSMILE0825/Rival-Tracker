@@ -1,7 +1,7 @@
-import { getSettings, listFundingsForDeployer, listTelegramChats, removeTelegramChat, saveSettings, saveTelegramChat } from "./db.js";
+import { getSettings, listCompetitors, listFundingsForDeployer, listTelegramChats, removeTelegramChat, saveSettings, saveTelegramChat } from "./db.js";
 import { lookupLaunchMarket } from "./market.js";
 import { renderAlertCard } from "./card.js";
-import { formatKst, sleep, timezoneLabel } from "./util.js";
+import { formatKst, nowSec, sleep } from "./util.js";
 
 const CLOCK_SKEW_SEC = 120;
 
@@ -11,10 +11,12 @@ export async function notifyLaunch(launch) {
     if (settings.telegramAlerts !== "1") return;
     const since = Number(settings.telegramSince) || 0;
     const launchedAt = Number(launch.launchedAt) || 0;
+    if (settings.fastMode === "1" && !launch.fast) return;
     if (!since || launchedAt + CLOCK_SKEW_SEC < since) return;
-    const market = await lookupLaunchMarket(launch.address);
+    const market = launch.market || (await lookupLaunchMarket(launch.address));
     const links = tokenLinks(launch.address, launch.deployer, market);
     const when = launchedAt || market?.pairCreatedAt || 0;
+    const detectedAt = Number(launch.detectedAt) || nowSec();
     const text = caption({
       emoji: "🚀",
       title: "NEW LAUNCH",
@@ -22,6 +24,8 @@ export async function notifyLaunch(launch) {
       name: launch.name,
       market,
       age: ageLabel(when),
+      eventAt: when,
+      detectedAt,
       rank: market?.rank,
       rival: launch.rival || "unknown",
       address: launch.address,
@@ -37,7 +41,7 @@ export async function notifyLaunch(launch) {
       volume24h: market?.volume24h,
       priceChange24h: market?.priceChange24h,
       ageLabel: ageLabel(when),
-      createdLabel: stamp(when, settings),
+      createdLabel: eventStamp(when),
       rank: market?.rank,
     });
     await sendTelegram(text, { photo: market?.imageUrl || "", photoBuffer, buttons: linkButtons(links) });
@@ -50,7 +54,7 @@ export async function notifyPaid(payment) {
   const settings = getSettings();
   if (settings.telegramAlerts !== "1") return false;
   const fundings = listFundingsForDeployer(payment.deployer);
-  const rival = fundings[0]?.label || "unknown";
+  const rival = fundings[0]?.label || rivalLabel(payment.deployer);
   let pairAddress = payment.pair_address || "";
   let dextoolsUrl = payment.dextools_url || "";
   let dexscreenerUrl = payment.dexscreener_url || "";
@@ -69,7 +73,8 @@ export async function notifyPaid(payment) {
     twitter: looked?.twitter || "",
   });
   const kind = paidKind(payment);
-  const when = Number(payment.pair_created_at) || Number(payment.created_at) || Number(payment.paid_at) || 0;
+  const when = Number(payment.paid_at) || Number(payment.pair_created_at) || Number(payment.created_at) || 0;
+  const detectedAt = Number(payment.detected_at) || nowSec();
   const text = caption({
     emoji: kind.emoji,
     title: kind.title,
@@ -86,6 +91,8 @@ export async function notifyPaid(payment) {
         }
       : payment,
     age: ageLabel(when),
+    eventAt: when,
+    detectedAt,
     rank: payment.rank,
     rival,
     address: payment.token_address,
@@ -101,7 +108,7 @@ export async function notifyPaid(payment) {
     volume24h: looked?.volume24h ?? payment.volume_24h,
     priceChange24h: looked?.priceChange24h ?? payment.price_change_24h,
     ageLabel: ageLabel(when),
-    createdLabel: stamp(when, settings),
+    createdLabel: eventStamp(when),
     rank: payment.rank,
   });
   await sendTelegram(text, { photo: looked?.imageUrl || payment.banner_url || "", photoBuffer, buttons: linkButtons(links) });
@@ -270,15 +277,44 @@ function caption(info) {
   const liq = money(info.market?.liquidityUsd ?? info.market?.liquidity_usd);
   const move = signedChange(info.market?.priceChange24h ?? info.market?.price_change_24h);
   const rank = Number(info.rank) > 0 ? `🔥 #${Number(info.rank)}` : "";
+  const clock = eventStamp(info.eventAt);
+  const lag = lagLabel(info.eventAt, info.detectedAt);
   const lines = [
     head,
     `MC ${cap} · Liq ${liq}${info.age ? ` · 🕐 ${esc(info.age)}` : ""}`,
     [move ? `24h: ${move}` : "", rank].filter(Boolean).join(" · "),
+    clock ? `Event ${esc(clock)}` : "",
+    lag ? `Detected in ${esc(lag)}` : "",
     info.rival ? `👤 ${esc(info.rival)}` : "",
     info.address ? `<code>${esc(info.address)}</code>` : "",
     linkLine(info.links),
   ];
   return lines.filter(Boolean).join("\n");
+}
+
+function eventStamp(unix) {
+  if (!unix) return "";
+  return `${formatKst(unix, -5)} UTC-5`;
+}
+
+function lagLabel(eventUnix, detectedUnix) {
+  const event = Number(eventUnix);
+  const detected = Number(detectedUnix);
+  if (!event || !detected) return "";
+  const seconds = Math.max(0, Math.floor(detected - event));
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const remain = seconds % 60;
+  if (minutes < 60) return remain ? `${minutes}m ${remain}s` : `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const mins = minutes % 60;
+  return mins ? `${hours}h ${mins}m` : `${hours}h`;
+}
+
+function rivalLabel(deployer) {
+  const key = String(deployer || "").toLowerCase();
+  const match = listCompetitors().find((competitor) => competitor.address === key);
+  return match?.label || "unknown";
 }
 
 function paidKind(payment) {
@@ -355,11 +391,6 @@ function linkLine(links) {
     .filter(([, url]) => /^https?:\/\//i.test(String(url || "")))
     .map(([label, url]) => `<a href="${esc(url)}">${label}</a>`);
   return parts.join(" · ");
-}
-
-function stamp(unix, settings) {
-  if (!unix) return "";
-  return `${formatKst(unix, settings.timezoneOffset)} ${timezoneLabel(settings.timezoneOffset)}`;
 }
 
 function ageLabel(unix) {

@@ -16,6 +16,7 @@ import {
   updateCompetitor,
 } from "./db.js";
 import { refreshMarkets, startLiveMarkets } from "./market.js";
+import { startFastWatch } from "./fast.js";
 import { startPaidWatch } from "./paid.js";
 import { autoScanTick, cachedScanRange, decorateScan, enqueueScan, getJob, refreshOne, startLiveTail, stopScan, warmScanRange } from "./scanner.js";
 import { headBlock } from "./chain.js";
@@ -127,6 +128,15 @@ app.post("/api/scan/stop", (_req, res) => {
   if (getSettings().live === "1") saveSettings({ live: "0" });
   stopScan();
   res.json(getJob());
+});
+
+app.post("/api/fast", (req, res) => {
+  const on = Boolean(req.body?.on);
+  const current = getSettings();
+  const next = { fastMode: on ? "1" : "0" };
+  if (on && current.fastMode !== "1") next.fastSince = String(nowSec());
+  saveSettings(next);
+  res.json({ fastMode: on });
 });
 
 app.post("/api/live", (req, res) => {
@@ -267,6 +277,10 @@ app.put("/api/settings", (req, res) => {
     next.maxPages = String(Math.floor(value));
   }
   if (body.autoScan != null) next.autoScan = body.autoScan ? "1" : "0";
+  if (body.fastMode != null) {
+    next.fastMode = body.fastMode ? "1" : "0";
+    if (next.fastMode === "1" && getSettings().fastMode !== "1") next.fastSince = String(nowSec());
+  }
   if (body.requireFirstFunder != null) next.requireFirstFunder = body.requireFirstFunder ? "1" : "0";
   if (body.telegramChatId != null) {
     const chat = String(body.telegramChatId).trim();
@@ -343,6 +357,7 @@ const port = Number(process.env.PORT) || 4177;
 app.listen(port, "127.0.0.1", () => {
   console.log(`Rival Tracker running at http://127.0.0.1:${port}`);
   startPaidWatch();
+  startFastWatch();
   startTelegramInbox();
   warmScanRange().catch((error) => console.error("scan range", error.message));
   if (getSettings().live === "1") {

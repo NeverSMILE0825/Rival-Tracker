@@ -246,8 +246,10 @@ function paintNav() {
 function paintActions() {
   const running = scanning();
   const live = state.data.settings.live === "1";
+  const fast = state.data.settings.fastMode === "1";
   const html = `
     <button class="btn live-toggle ${live ? "on" : ""}" data-act="live" aria-pressed="${live ? "true" : "false"}"><span class="dot ${live ? "live" : ""}"></span>Live</button>
+    <button class="btn live-toggle ${fast ? "on" : ""}" data-act="fast" aria-pressed="${fast ? "true" : "false"}"><span class="dot ${fast ? "live" : ""}"></span>Fast Mode</button>
     <button class="btn" data-act="refresh-prices">Refresh prices</button>
     ${running ? `<button class="btn danger" data-act="stop">Stop scan</button>` : `<button class="btn primary" data-act="scan-all">Scan all</button>`}
   `;
@@ -994,13 +996,14 @@ function viewSettings() {
       </div>
       <div class="field wide">
         <label>Telegram alerts</label>
-        <p class="keys-note">Leave Live on in the header so new transactions keep getting read. Alerts cover launches from the moment you turn this on. Older tokens already in the table stay quiet.</p>
+        <p class="keys-note">Leave Live on in the header so new transactions keep getting read. Fast Mode switches launch alerts to new Dextools pairs and paid alerts to the Dextools and Dexscreener boards. Alerts cover events from the moment you turn them on.</p>
         <p class="keys-note">Anyone who presses Start in the bot gets the same alerts. ${telegramAudience()}</p>
         <p class="keys-note">${settings.telegramBotTokenSet ? "Bot token saved. Paste a new one only if you want to replace it." : "No bot token saved yet."}</p>
         <input name="telegramBotToken" type="password" autocomplete="off" spellcheck="false" placeholder="Bot token from @BotFather" />
         <input name="telegramChatId" autocomplete="off" spellcheck="false" placeholder="Chat id" value="${esc(fieldValue("telegramChatId"))}" />
       </div>
     </div>
+    <label class="check"><input type="checkbox" name="fastMode" ${settings.fastMode === "1" ? "checked" : ""}/> Fast Mode: watch Dextools live pairs and paid boards, and alert only when the token is tied to a rival</label>
     <label class="check"><input type="checkbox" name="telegramAlerts" ${settings.telegramAlerts === "1" ? "checked" : ""}/> Send a Telegram card for each new launch and paid promotion</label>
     <label class="check"><input type="checkbox" name="autoScan" ${settings.autoScan === "1" ? "checked" : ""}/> Keep scanning enabled rivals on a timer</label>
     <label class="check"><input type="checkbox" name="requireFirstFunder" ${settings.requireFirstFunder === "1" ? "checked" : ""}/> Only keep a wallet when this rival is its first real ETH source</label>
@@ -1242,6 +1245,7 @@ async function onKeyFile(event) {
 async function saveSettings(form) {
   const data = Object.fromEntries(new FormData(form).entries());
   data.autoScan = form.autoScan.checked;
+  data.fastMode = form.fastMode.checked;
   data.requireFirstFunder = form.requireFirstFunder.checked;
   data.telegramAlerts = form.telegramAlerts.checked;
   const settings = state.data.settings;
@@ -1443,6 +1447,17 @@ async function onClick(event) {
     event.preventDefault();
     state.drawer = { type: "token", address: button.dataset.address };
     paintDrawer();
+    return;
+  }
+  if (act === "fast") {
+    const on = state.data.settings.fastMode !== "1";
+    try {
+      await api("/api/fast", { method: "POST", body: { on } });
+      toast(on ? "Fast Mode on" : "Fast Mode off");
+      await load({ fresh: true });
+    } catch (error) {
+      toast(error.message);
+    }
     return;
   }
   if (act === "live") {

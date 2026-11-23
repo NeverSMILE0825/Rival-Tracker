@@ -855,21 +855,24 @@ async function saveMints(competitor, tx, receipt) {
       createdBlock: Number(tx.blockNumber),
     });
     if (result.created) {
-      addEvent({
-        kind: "launch",
-        competitorId: competitor.id,
-        address: token.address,
-        message: `${token.meta.symbol} launched by ${competitor.label} · ${zonedStamp(Number(tx.timeStamp))}`,
-      });
-      notifyLaunch({
-        symbol: token.meta.symbol,
-        name: token.meta.name,
-        address: token.address,
-        deployer: competitor.address,
-        rival: competitor.label,
-        launchedAt: Number(tx.timeStamp),
-      });
-      watchPaid(token.address);
+      if (getSettings().fastMode !== "1") {
+        addEvent({
+          kind: "launch",
+          competitorId: competitor.id,
+          address: token.address,
+          message: `${token.meta.symbol} launched by ${competitor.label} · ${zonedStamp(Number(tx.timeStamp))}`,
+        });
+        notifyLaunch({
+          symbol: token.meta.symbol,
+          name: token.meta.name,
+          address: token.address,
+          deployer: competitor.address,
+          rival: competitor.label,
+          launchedAt: Number(tx.timeStamp),
+          detectedAt: nowSec(),
+        });
+        watchPaid(token.address);
+      }
       created.push(token.address);
     }
   }
@@ -1029,21 +1032,24 @@ async function inspectDeployer(address, settings) {
         });
         if (result.created) {
           const rival = fundings[0];
-          addEvent({
-            kind: "launch",
-            competitorId: rival.competitor_id,
-            address: token.address,
-            message: `${token.meta.symbol} launched · ${rival.label} · ${zonedStamp(Number(tx.timeStamp))}`,
-          });
-          notifyLaunch({
-            symbol: token.meta.symbol,
-            name: token.meta.name,
-            address: token.address,
-            deployer: address,
-            rival: rival.label,
-            launchedAt: Number(tx.timeStamp),
-          });
-          watchPaid(token.address);
+          if (getSettings().fastMode !== "1") {
+            addEvent({
+              kind: "launch",
+              competitorId: rival.competitor_id,
+              address: token.address,
+              message: `${token.meta.symbol} launched · ${rival.label} · ${zonedStamp(Number(tx.timeStamp))}`,
+            });
+            notifyLaunch({
+              symbol: token.meta.symbol,
+              name: token.meta.name,
+              address: token.address,
+              deployer: address,
+              rival: rival.label,
+              launchedAt: Number(tx.timeStamp),
+              detectedAt: nowSec(),
+            });
+            watchPaid(token.address);
+          }
           found.push(token.address);
         }
       }
@@ -1279,7 +1285,7 @@ async function drainTraces() {
 
 async function watchNewBlocks() {
   const settings = getSettings();
-  if (settings.live !== "1") return;
+  if (settings.live !== "1" || settings.fastMode === "1") return;
   const head = await liveHeadBlock();
   const saved = Number(settings.liveSeenBlock) || 0;
   const cursor = saved > 0 ? saved : Math.max(0, head - 2);
@@ -1353,6 +1359,7 @@ async function readNonces(rows) {
 }
 
 async function watchNonces() {
+  if (getSettings().fastMode === "1") return;
   const now = nowSec();
   const newest = listDeployerPage({ since: now - 6 * 3600, limit: 250, offset: 0 });
   const hot = listDeployerPage({ since: now - 6 * 3600, limit: 300, offset: hotOffset });

@@ -151,6 +151,8 @@ const DEFAULTS = {
   telegramUpdateOffset: "0",
   paidBaseline: "",
   liveSeenBlock: "",
+  fastMode: "0",
+  fastSince: "",
 };
 
 const SEED = [
@@ -432,6 +434,19 @@ export function recordFunding({ competitorId, deployer, funder, txHash, blockNum
   return { created: false };
 }
 
+export function listRivalCreators() {
+  return db
+    .prepare(
+      `SELECT d.address, c.label, c.id AS competitor_id, c.address AS competitor_address, MIN(f.timestamp) AS funded_at
+       FROM deployers d
+       JOIN fundings f ON f.deployer = d.address
+       JOIN competitors c ON c.id = f.competitor_id AND c.enabled = 1
+       WHERE d.status != 'ignored'
+       GROUP BY d.address`,
+    )
+    .all();
+}
+
 export function listFundingsForDeployer(address) {
   return db
     .prepare(
@@ -703,7 +718,8 @@ export function listUnalertedPaid() {
     .prepare(
       `SELECT p.fingerprint, p.token_address, p.source, p.kind, p.amount, p.paid_at, p.detail,
               t.symbol, t.name, t.deployer, t.pair_address, t.dextools_url, t.dexscreener_url, t.banner_url,
-              t.liquidity_usd, t.market_cap, t.volume_24h, t.price_change_24h, t.created_at, t.pair_created_at
+              t.liquidity_usd, t.market_cap, t.volume_24h, t.price_change_24h, t.created_at, t.pair_created_at,
+              p.created_at AS detected_at
        FROM token_paid p JOIN tokens t ON t.address = p.token_address
        WHERE p.alerted = 0
        ORDER BY p.paid_at ASC`,

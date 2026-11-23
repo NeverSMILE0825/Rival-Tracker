@@ -9,6 +9,7 @@ import {
   saveSettings,
   setTokenBanner,
 } from "./db.js";
+import { ensureRivalToken, relateToken } from "./relate.js";
 import { notifyPaid } from "./telegram.js";
 import { nowSec, sleep } from "./util.js";
 
@@ -206,9 +207,19 @@ function fetchDextools(url, version) {
   });
 }
 
+async function acceptToken(address, known, hints = {}) {
+  if (known.has(address)) return true;
+  if (getSettings().fastMode !== "1") return false;
+  const related = await relateToken(address);
+  if (!related) return false;
+  const saved = await ensureRivalToken(address, related, hints);
+  if (saved) known.add(address);
+  return saved;
+}
+
 async function syncRacePage(baseline, page) {
   const known = new Set(listTokenAddresses());
-  if (!known.size) return null;
+  if (!known.size && getSettings().fastMode !== "1") return null;
   let response;
   try {
     response = await fetchDextools(
@@ -225,7 +236,7 @@ async function syncRacePage(baseline, page) {
   const results = Array.isArray(data.results) ? data.results : [];
   for (const row of results) {
     const address = String(row.mainToken?.address || "").toLowerCase();
-    if (!known.has(address)) continue;
+    if (!(await acceptToken(address, known, { name: row.mainToken?.name, symbol: row.mainToken?.symbol }))) continue;
     const nitro = row.nitro || {};
     const total = Number(nitro.total) || 0;
     if (!total) continue;
@@ -316,6 +327,7 @@ async function syncBanners() {
 
 const DEX_FEEDS = [
   "https://api.dexscreener.com/token-profiles/latest/v1",
+  "https://api.dexscreener.com/token-profiles/recent-updates/v1",
   "https://api.dexscreener.com/community-takeovers/latest/v1",
   "https://api.dexscreener.com/ads/latest/v1",
   "https://api.dexscreener.com/token-boosts/latest/v1",
@@ -323,7 +335,7 @@ const DEX_FEEDS = [
 
 async function syncFastFeeds(baseline) {
   const known = new Set(listTokenAddresses());
-  if (!known.size) return;
+  if (!known.size && getSettings().fastMode !== "1") return;
   const hits = new Set();
   const dexFeeds = Promise.all(
     DEX_FEEDS.map(async (url) => {
@@ -335,7 +347,7 @@ async function syncFastFeeds(baseline) {
         for (const row of rows) {
           if (String(row.chainId || "") !== "ethereum") continue;
           const address = String(row.tokenAddress || "").toLowerCase();
-          if (known.has(address)) hits.add(address);
+          if (await acceptToken(address, known)) hits.add(address);
         }
       } catch (error) {
         console.error("paid feed", error.message);
@@ -352,7 +364,7 @@ async function syncFastFeeds(baseline) {
 
 async function syncSocialPage(baseline, page) {
   const known = new Set(listTokenAddresses());
-  if (!known.size) return false;
+  if (!known.size && getSettings().fastMode !== "1") return false;
   let response;
   try {
     response = await fetchDextools(
@@ -371,7 +383,7 @@ async function syncSocialPage(baseline, page) {
     const address = String(row.id || "").toLowerCase();
     const paidAt = unixTime(Date.parse(row.updatedAt || ""));
     if (paidAt) oldest = Math.min(oldest, paidAt);
-    if (!known.has(address) || !paidAt) continue;
+    if (!paidAt || !(await acceptToken(address, known, { name: row.name, symbol: row.symbol }))) continue;
     savePaid({
       fingerprint: `dextools|info|${address}|${paidAt}`,
       tokenAddress: address,
