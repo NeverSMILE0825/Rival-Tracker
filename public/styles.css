@@ -401,6 +401,9 @@ body.chart-panning, body.chart-panning * { cursor: grabbing !important; }
 .chart-tip dd { margin: 0; font-size: 12px; overflow-wrap: anywhere; }
 .chart-tip a { color: inherit; }
 .check { display: flex; gap: 8px; align-items: center; color: var(--muted); margin: 8px 0 14px; }
+.settings-tabs { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
+.settings-tabs .chip { padding: 8px 14px; }
+.settings-panel .actions { margin-top: 4px; }
 .settings { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 16px; }
 .settings .wide { grid-column: 1 / -1; }
 .field textarea { min-height: 140px; resize: vertical; font-family: Consolas, "Cascadia Mono", monospace; }

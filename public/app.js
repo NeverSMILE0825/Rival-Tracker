@@ -12,6 +12,7 @@ const state = {
   etherscanFileName: "",
   scanRangeMode: "",
   settingsDraft: null,
+  settingsTab: "scan",
   pageSize: 50,
   pages: { waiting: 1, tokens: 1, buyers: 1, realBuyers: 1 },
   buyerFilter: "all",
@@ -35,7 +36,7 @@ const TITLES = {
   rivals: ["Rivals", "Add, rename, or remove the wallets you want to follow."],
   buyers: ["Buyers", "Wallets to follow when they buy or sell a rival token. Tracking runs on its own and does not wait on launch detection."],
   trends: ["Trends", "Every ETH and WETH pair on Dextools live, grouped by the name or ticker they share."],
-  settings: ["Settings", "Choose the start and end time, or a block range, how much ETH counts as funding, and when a pool counts as rugged."],
+  settings: ["Settings", "Scan, funding, Etherscan, Telegram, buyers, and trends."],
 };
 
 const COLORS = ["#d6f25c", "#ffb020", "#8eb6ff", "#c9a6ff", "#79e3d6", "#ff8f70", "#ffd6e0", "#ffffff"];
@@ -362,9 +363,11 @@ function paintScan() {
 }
 
 function paintView() {
-  const [title, sub] = TITLES[state.route] || TITLES.overview;
+  const [title, fallbackSub] = TITLES[state.route] || TITLES.overview;
+  const sub = state.route === "settings" ? settingsTabMeta()[2] : fallbackSub;
   document.getElementById("title").textContent = title;
   document.getElementById("sub").textContent = sub;
+  captureSettingsDraft();
   const view = document.getElementById("view");
   const scroller = view.querySelector(".table-scroll");
   const scrollTop = scroller ? scroller.scrollTop : 0;
@@ -387,6 +390,7 @@ function paintView() {
     state.etherscanMode,
     state.etherscanFileName,
     state.scanRangeMode || state.data?.settings?.scanRangeMode || "date",
+    settingsTabId(),
     state.pageSize,
     state.pages[state.route] || 1,
     state.mainV4 ? "main" : "allpairs",
@@ -1308,10 +1312,47 @@ function rangeMode() {
   return state.scanRangeMode || state.data.settings.scanRangeMode || "date";
 }
 
+const SETTINGS_TABS = [
+  ["scan", "Scan", "Set the scan window and how often rivals are checked."],
+  ["funding", "Funding", "How much ETH counts as funding, and which wallets stay on the list."],
+  ["etherscan", "Etherscan", "Add the API keys used to read wallet history."],
+  ["telegram", "Telegram", "Launch and paid-promotion alerts for the launch bot."],
+  ["buyers", "Buyers", "Buy and sell alerts for Buyer Tracker."],
+  ["trends", "Trends", "When a shared name counts as rising, trending, exploding, or the whole market."],
+];
+const SETTING_CHECKS = ["fastMode", "telegramAlerts", "buyerAlerts", "trendAlerts", "autoScan", "requireFirstFunder"];
+
+function settingsTabId() {
+  return SETTINGS_TABS.some(([id]) => id === state.settingsTab) ? state.settingsTab : "scan";
+}
+
+function settingsTabMeta() {
+  return SETTINGS_TABS.find(([id]) => id === settingsTabId()) || SETTINGS_TABS[0];
+}
+
+function captureSettingsDraft() {
+  const form = document.getElementById("settings");
+  if (!form) return;
+  const data = Object.fromEntries(new FormData(form).entries());
+  for (const name of SETTING_CHECKS) {
+    const input = form.elements.namedItem(name);
+    if (input) data[name] = input.checked ? "1" : "0";
+  }
+  state.settingsDraft = { ...(state.settingsDraft || {}), ...data };
+}
+
 function fieldValue(name) {
   const draft = state.settingsDraft || {};
   if (draft[name] != null && String(draft[name]) !== "") return draft[name];
   return state.data.settings[name] ?? "";
+}
+
+function checkedSetting(name) {
+  const draft = state.settingsDraft || {};
+  if (draft[name] === "1" || draft[name] === "0") return draft[name] === "1";
+  const settings = state.data.settings;
+  if (name === "trendAlerts") return settings.trendAlerts !== "0";
+  return settings[name] === "1";
 }
 
 function clockInputs(prefix) {
@@ -1351,11 +1392,20 @@ function buyerAudience() {
     .join(", ");
 }
 
+function settingsPanel(id, body) {
+  const hidden = settingsTabId() === id ? "" : " hidden";
+  return `<div class="settings-panel" data-panel="${id}"${hidden}>${body}</div>`;
+}
+
 function viewSettings() {
   const settings = state.data.settings;
   const mode = rangeMode();
-  return `<form id="settings" class="card">
-    <div class="settings">
+  const tabs = SETTINGS_TABS.map(
+    ([id, label]) => `<button type="button" class="chip ${settingsTabId() === id ? "on" : ""}" data-act="settings-tab" data-tab="${id}" role="tab" aria-selected="${settingsTabId() === id ? "true" : "false"}">${label}</button>`,
+  ).join("");
+  const scan = settingsPanel(
+    "scan",
+    `<div class="settings">
       <div class="field wide">
         <label>Scan range</label>
         <div class="chips key-modes">
@@ -1366,12 +1416,27 @@ function viewSettings() {
       </div>
       <div class="field"><label>Timezone</label><div class="clock"><span>UTC</span><input name="timezoneOffset" inputmode="numeric" maxlength="3" placeholder="9" value="${esc(fieldValue("timezoneOffset") || "9")}" /></div></div>
       ${scanRangeFields()}
+      <div class="field"><label>Auto scan every (minutes)</label><input name="scanIntervalMin" value="${esc(fieldValue("scanIntervalMin"))}" /></div>
+      <div class="field"><label>Pages per pass</label><input name="maxPages" value="${esc(fieldValue("maxPages"))}" /></div>
+    </div>
+    <label class="check"><input type="checkbox" name="fastMode" ${checkedSetting("fastMode") ? "checked" : ""}/> Fast Mode: watch Dextools live pairs and paid boards, and alert only when the token is tied to a rival</label>
+    <label class="check"><input type="checkbox" name="autoScan" ${checkedSetting("autoScan") ? "checked" : ""}/> Keep scanning enabled rivals on a timer</label>`,
+  );
+  const funding = settingsPanel(
+    "funding",
+    `<div class="settings">
       <div class="field"><label>Minimum funding (ETH)</label><input name="minFundingEth" value="${esc(fieldValue("minFundingEth"))}" /></div>
       <div class="field"><label>Maximum funding (ETH)</label><input name="maxFundingEth" value="${esc(fieldValue("maxFundingEth"))}" /></div>
       <div class="field"><label>Ignore incoming dust (ETH)</label><input name="dustEth" value="${esc(fieldValue("dustEth"))}" /></div>
       <div class="field"><label>Live liquidity floor (USD)</label><input name="rugLiquidityUsd" value="${esc(fieldValue("rugLiquidityUsd"))}" /></div>
-      <div class="field"><label>Auto scan every (minutes)</label><input name="scanIntervalMin" value="${esc(fieldValue("scanIntervalMin"))}" /></div>
-      <div class="field"><label>Pages per pass</label><input name="maxPages" value="${esc(fieldValue("maxPages"))}" /></div>
+    </div>
+    <label class="check"><input type="checkbox" name="requireFirstFunder" ${checkedSetting("requireFirstFunder") ? "checked" : ""}/> Only keep a wallet when this rival is its first real ETH source</label>
+    <p class="muted">Sample launches are funded with well under 1 ETH, so the maximum keeps treasury-sized transfers out of the waiting list. A wallet stays on the list when this rival is the first wallet that sent it real ETH. ${state.data.counts.ignored} wallets are hidden by that rule.</p>
+    <div class="actions"><button class="btn" type="button" data-act="recheck">Re-check hidden wallets</button></div>`,
+  );
+  const etherscan = settingsPanel(
+    "etherscan",
+    `<div class="settings">
       <div class="field wide">
         <label>Etherscan API keys</label>
         <div class="chips key-modes">
@@ -1393,6 +1458,12 @@ function viewSettings() {
               <input id="key-file" type="file" accept=".txt,text/plain,.csv" hidden />`
         }
       </div>
+    </div>
+    <div class="actions"><button class="btn" type="button" data-act="clear-key">Remove Etherscan keys</button></div>`,
+  );
+  const telegram = settingsPanel(
+    "telegram",
+    `<div class="settings">
       <div class="field wide">
         <label>Telegram alerts</label>
         <p class="keys-note">Leave Live on in the header so new transactions keep getting read. Fast Mode switches launch alerts to new Dextools pairs and paid alerts to the Dextools and Dexscreener boards. Alerts cover events from the moment you turn them on.</p>
@@ -1401,6 +1472,16 @@ function viewSettings() {
         <input name="telegramBotToken" type="password" autocomplete="off" spellcheck="false" placeholder="Bot token from @BotFather" />
         <input name="telegramChatId" autocomplete="off" spellcheck="false" placeholder="Chat id" value="${esc(fieldValue("telegramChatId"))}" />
       </div>
+    </div>
+    <label class="check"><input type="checkbox" name="telegramAlerts" ${checkedSetting("telegramAlerts") ? "checked" : ""}/> Send a Telegram card for each new launch and paid promotion</label>
+    <div class="actions">
+      <button class="btn" type="button" data-act="telegram-test">Send test message</button>
+      <button class="btn" type="button" data-act="clear-telegram">Remove Telegram token</button>
+    </div>`,
+  );
+  const buyers = settingsPanel(
+    "buyers",
+    `<div class="settings">
       <div class="field wide">
         <label>Buyer Tracker</label>
         <p class="keys-note">Name: Buyer Tracker · @ETHBuyerTrackerBot. This bot only sends buyer buys and sells. Launch alerts stay on the other bot.</p>
@@ -1409,49 +1490,34 @@ function viewSettings() {
         <input name="buyerBotToken" type="password" autocomplete="off" spellcheck="false" placeholder="@ETHBuyerTrackerBot token from @BotFather" />
         <input name="buyerChatId" autocomplete="off" spellcheck="false" placeholder="Chat id" value="${esc(fieldValue("buyerChatId"))}" />
       </div>
+    </div>
+    <label class="check"><input type="checkbox" name="buyerAlerts" ${checkedSetting("buyerAlerts") ? "checked" : ""}/> Send a Buyer Tracker message for each buy or sell</label>
+    <div class="actions">
+      <button class="btn" type="button" data-act="buyer-test">Send buyer test</button>
+      <button class="btn" type="button" data-act="clear-buyer-token">Remove Buyer Tracker token</button>
+    </div>`,
+  );
+  const trends = settingsPanel(
+    "trends",
+    `<div class="settings">
       <div class="field wide">
         <label>Narrative trends</label>
         <p class="keys-note">Counts every ETH and WETH pair on Dextools live that shares a name or ticker inside the window. Rival tokens are not required. Rising is the start. Trending means it has caught on. Exploding means it is running. The last count means the whole market is on that name. Alerts go out on the launch bot. The Trends page can show 1h, 6h, 12h, 24h, 3d, and 7d.</p>
       </div>
-      <div class="field">
-        <label>Window (minutes)</label>
-        <input name="trendWindowMin" type="number" min="5" max="1440" step="1" value="${esc(fieldValue("trendWindowMin") || "60")}" />
-      </div>
-      <div class="field">
-        <label>Rising count</label>
-        <input name="trendRising" type="number" min="2" max="500" step="1" value="${esc(fieldValue("trendRising") || "3")}" />
-      </div>
-      <div class="field">
-        <label>Trending count</label>
-        <input name="trendTrending" type="number" min="2" max="500" step="1" value="${esc(fieldValue("trendTrending") || "5")}" />
-      </div>
-      <div class="field">
-        <label>Exploding count</label>
-        <input name="trendExploding" type="number" min="2" max="500" step="1" value="${esc(fieldValue("trendExploding") || "7")}" />
-      </div>
-      <div class="field">
-        <label>Whole market count</label>
-        <input name="trendMarket" type="number" min="2" max="500" step="1" value="${esc(fieldValue("trendMarket") || "10")}" />
-      </div>
+      <div class="field"><label>Window (minutes)</label><input name="trendWindowMin" type="number" min="5" max="1440" step="1" value="${esc(fieldValue("trendWindowMin") || "60")}" /></div>
+      <div class="field"><label>Rising count</label><input name="trendRising" type="number" min="2" max="500" step="1" value="${esc(fieldValue("trendRising") || "3")}" /></div>
+      <div class="field"><label>Trending count</label><input name="trendTrending" type="number" min="2" max="500" step="1" value="${esc(fieldValue("trendTrending") || "5")}" /></div>
+      <div class="field"><label>Exploding count</label><input name="trendExploding" type="number" min="2" max="500" step="1" value="${esc(fieldValue("trendExploding") || "7")}" /></div>
+      <div class="field"><label>Whole market count</label><input name="trendMarket" type="number" min="2" max="500" step="1" value="${esc(fieldValue("trendMarket") || "10")}" /></div>
     </div>
-    <label class="check"><input type="checkbox" name="fastMode" ${settings.fastMode === "1" ? "checked" : ""}/> Fast Mode: watch Dextools live pairs and paid boards, and alert only when the token is tied to a rival</label>
-    <label class="check"><input type="checkbox" name="telegramAlerts" ${settings.telegramAlerts === "1" ? "checked" : ""}/> Send a Telegram card for each new launch and paid promotion</label>
-    <label class="check"><input type="checkbox" name="buyerAlerts" ${settings.buyerAlerts === "1" ? "checked" : ""}/> Send a Buyer Tracker message for each buy or sell</label>
-    <label class="check"><input type="checkbox" name="trendAlerts" ${settings.trendAlerts !== "0" ? "checked" : ""}/> Send a trend alert when a name starts rising, trends, explodes, or takes the market</label>
-    <label class="check"><input type="checkbox" name="autoScan" ${settings.autoScan === "1" ? "checked" : ""}/> Keep scanning enabled rivals on a timer</label>
-    <label class="check"><input type="checkbox" name="requireFirstFunder" ${settings.requireFirstFunder === "1" ? "checked" : ""}/> Only keep a wallet when this rival is its first real ETH source</label>
-      <p class="muted">Sample launches are funded with well under 1 ETH, so the maximum keeps treasury-sized transfers out of the waiting list. A wallet stays on the list when this rival is the first wallet that sent it real ETH. ${state.data.counts.ignored} wallets are hidden by that rule.</p>
+    <label class="check"><input type="checkbox" name="trendAlerts" ${checkedSetting("trendAlerts") ? "checked" : ""}/> Send a trend alert when a name starts rising, trends, explodes, or takes the market</label>
+    <div class="actions"><button class="btn" type="button" data-act="trend-samples">Show trend messages</button></div>`,
+  );
+  return `<form id="settings" class="card">
+    <div class="settings-tabs" role="tablist">${tabs}</div>
+    ${scan}${funding}${etherscan}${telegram}${buyers}${trends}
     <div class="err" id="settings-err"></div>
-    <div class="actions">
-      <button class="btn primary" type="submit">Save settings</button>
-      <button class="btn" type="button" data-act="telegram-test">Send test message</button>
-      <button class="btn" type="button" data-act="buyer-test">Send buyer test</button>
-      <button class="btn" type="button" data-act="trend-samples">Show trend messages</button>
-      <button class="btn" type="button" data-act="clear-key">Remove Etherscan keys</button>
-      <button class="btn" type="button" data-act="clear-telegram">Remove Telegram token</button>
-      <button class="btn" type="button" data-act="clear-buyer-token">Remove Buyer Tracker token</button>
-      <button class="btn" type="button" data-act="recheck">Re-check hidden wallets</button>
-    </div>
+    <div class="actions"><button class="btn primary" type="submit">Save settings</button></div>
   </form>`;
 }
 
@@ -2872,6 +2938,15 @@ async function onClick(event) {
     if (!page || button.disabled) return;
     state.pages[state.route] = page;
     paintView();
+    return;
+  }
+  if (act === "settings-tab") {
+    const tab = button.dataset.tab;
+    if (!SETTINGS_TABS.some(([id]) => id === tab) || tab === settingsTabId()) return;
+    state.settingsTab = tab;
+    state.forceView = true;
+    paintView();
+    state.forceView = false;
     return;
   }
   if (act === "range-mode") {
