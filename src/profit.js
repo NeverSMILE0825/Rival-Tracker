@@ -6,6 +6,7 @@ import {
   nextProfitToken,
   nextUnmeasuredSwap,
   noteSwapAttempt,
+  listStoredProfits,
   profitTotals,
   markSetupChecked,
   nextSetupSwap,
@@ -406,6 +407,14 @@ async function repairOneSetup() {
   return true;
 }
 
+function recomputeProfits() {
+  const tokens = listStoredProfits();
+  for (const token of tokens) {
+    writeTotals(token, Number(token.profit_block) || 0, Boolean(token.profit_checked_at));
+  }
+  console.log("profit initial buys", tokens.length);
+}
+
 async function repairCreationSwaps() {
   const rows = listCreationSwaps();
   const tokens = new Set();
@@ -431,6 +440,11 @@ export function startProfitWatch() {
   started = true;
   const loop = async () => {
     console.log("Token profit is calculated apart from launch detection");
+    try {
+      recomputeProfits();
+    } catch (error) {
+      console.error("profit initial buys", error.message);
+    }
     try {
       await repairCreationSwaps();
     } catch (error) {

@@ -42,8 +42,9 @@ function getJson(url, headers = {}) {
   });
 }
 
-function realSwaps(token) {
+function realSwaps(token, createdBlock) {
   const rows = listTokenSwaps(token);
+  const block = Number(createdBlock) || 0;
   const counts = new Map();
   for (const row of rows) {
     const dest = String(row.tx_to || "").toLowerCase();
@@ -52,6 +53,7 @@ function realSwaps(token) {
   }
   const team = new Set(teamAddresses([...counts].map(([dest, n]) => ({ dest, n }))));
   return rows.filter((row) => {
+    if (block > 0 && Number(row.block_number) === block) return false;
     const side = String(row.side || "");
     if (Number(row.measured) !== 1 || (side !== "buy" && side !== "sell")) return false;
     return !team.has(String(row.tx_to || "").toLowerCase());
@@ -234,7 +236,7 @@ export function realBuyerProgress(address) {
 }
 
 async function loadRealBuyerTrades(token, saved) {
-  const swaps = realSwaps(token);
+  const swaps = realSwaps(token, saved.created_block);
   const ready = Boolean(saved.profit_checked_at);
   const pairs = listBuyerPairs(token);
   const tracker = {

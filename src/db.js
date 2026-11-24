@@ -1044,8 +1044,11 @@ export function swapTargetCounts(token) {
 export function listCreationSwaps() {
   return db
     .prepare(
-      `SELECT token_address, tx_hash FROM token_swaps
-       WHERE measured = 1 AND side IN ('buy', 'sell') AND IFNULL(tx_to, '') = ''`,
+      `SELECT s.token_address, s.tx_hash
+       FROM token_swaps s
+       JOIN tokens t ON t.address = s.token_address
+       WHERE s.measured = 1 AND s.side IN ('buy', 'sell') AND IFNULL(s.tx_to, '') = ''
+         AND NOT (IFNULL(t.created_block, 0) > 0 AND s.block_number = t.created_block)`,
     )
     .all();
 }
@@ -1055,9 +1058,12 @@ export function nextUnmeasuredSwap(token, team) {
   const marks = excluded.map(() => "?").join(",");
   return db
     .prepare(
-      `SELECT tx_hash, attempts FROM token_swaps
-       WHERE token_address = ? AND measured = 0 AND IFNULL(tx_to, '') NOT IN (${marks})
-       ORDER BY attempts, block_number
+      `SELECT s.tx_hash, s.attempts
+       FROM token_swaps s
+       JOIN tokens t ON t.address = s.token_address
+       WHERE s.token_address = ? AND s.measured = 0 AND IFNULL(s.tx_to, '') NOT IN (${marks})
+         AND NOT (IFNULL(t.created_block, 0) > 0 AND s.block_number = t.created_block)
+       ORDER BY s.attempts, s.block_number
        LIMIT 1`,
     )
     .get(token, ...excluded);
@@ -1074,9 +1080,12 @@ export function saveSwapMeasure(token, hash, side, wei) {
 export function nextSetupSwap() {
   return db
     .prepare(
-      `SELECT token_address, tx_hash FROM token_swaps
-       WHERE measured = 1 AND side IN ('buy', 'sell') AND IFNULL(setup_checked, 0) = 0
-       ORDER BY block_number DESC
+      `SELECT s.token_address, s.tx_hash
+       FROM token_swaps s
+       JOIN tokens t ON t.address = s.token_address
+       WHERE s.measured = 1 AND s.side IN ('buy', 'sell') AND IFNULL(s.setup_checked, 0) = 0
+         AND NOT (IFNULL(t.created_block, 0) > 0 AND s.block_number = t.created_block)
+       ORDER BY s.block_number DESC
        LIMIT 1`,
     )
     .get();
@@ -1095,11 +1104,26 @@ export function profitTotals(token, team) {
   const marks = excluded.map(() => "?").join(",");
   return db
     .prepare(
-      `SELECT side, amount_wei FROM token_swaps
-       WHERE token_address = ? AND measured = 1 AND side IN ('buy', 'sell')
-         AND IFNULL(tx_to, '') NOT IN (${marks})`,
+      `SELECT s.side, s.amount_wei
+       FROM token_swaps s
+       JOIN tokens t ON t.address = s.token_address
+       WHERE s.token_address = ?
+         AND s.measured = 1
+         AND s.side IN ('buy', 'sell')
+         AND IFNULL(s.tx_to, '') NOT IN (${marks})
+         AND NOT (IFNULL(t.created_block, 0) > 0 AND s.block_number = t.created_block)`,
     )
     .all(token, ...excluded);
+}
+
+export function listStoredProfits() {
+  return db
+    .prepare(
+      `SELECT address, symbol, profit_block, profit_checked_at
+       FROM tokens
+       WHERE profit_wei IS NOT NULL`,
+    )
+    .all();
 }
 
 export function saveTokenProfit(token, fields) {
