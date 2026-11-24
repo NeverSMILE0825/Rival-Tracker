@@ -25,6 +25,7 @@ const state = {
   realBuyers: null,
   buyerChart: null,
   realPageSize: 25,
+  realSpan: { from: "", fromUnit: "m", to: "", toUnit: "h" },
 };
 
 const TITLES = {
@@ -1562,6 +1563,108 @@ function realPager(page) {
   </footer>`;
 }
 
+const REAL_WINDOWS = [
+  ["5m", "First 5m", 5 * 60],
+  ["15m", "First 15m", 15 * 60],
+  ["30m", "First 30m", 30 * 60],
+  ["1h", "First 1h", 60 * 60],
+  ["6h", "First 6h", 6 * 60 * 60],
+  ["12h", "First 12h", 12 * 60 * 60],
+  ["24h", "First 24h", 24 * 60 * 60],
+];
+
+function realLaunch(ledger) {
+  const token = (state.data?.tokens || []).find((item) => item.address === ledger.address);
+  return Number(token?.created_at) || Number(ledger.launchedAt) || 0;
+}
+
+function spanSeconds(value, unit) {
+  if (value === "" || value == null) return null;
+  const number = Number(value);
+  if (!Number.isFinite(number) || number < 0) return null;
+  return number * (unit === "h" ? 3600 : 60);
+}
+
+function profitInSpan(rows, start, end) {
+  let buy = 0n;
+  let sell = 0n;
+  let buys = 0;
+  let sells = 0;
+  for (const row of rows) {
+    const time = Number(row.time) || 0;
+    if (!time || time < start || (end != null && time >= end)) continue;
+    let wei = 0n;
+    try {
+      wei = BigInt(row.amountWei || "0");
+    } catch {
+      wei = 0n;
+    }
+    if (row.type === "sell") {
+      sell += wei;
+      sells += 1;
+    } else {
+      buy += wei;
+      buys += 1;
+    }
+  }
+  return { wei: buy - sell, buys, sells };
+}
+
+function profitText(result) {
+  const wei = result.wei;
+  const negative = wei < 0n;
+  const abs = negative ? -wei : wei;
+  const whole = abs / 10n ** 18n;
+  const fullFrac = (abs % 10n ** 18n).toString().padStart(18, "0").replace(/0+$/, "");
+  const exact = `${negative ? "-" : ""}${whole}${fullFrac ? `.${fullFrac}` : ""} ETH`;
+  const shown = `${negative ? "-" : ""}${formatEth(abs.toString())} ETH`;
+  const counts = `${countWord(result.buys, "buy", "buys")} + ${countWord(result.sells, "sell", "sells")}`;
+  const tone = wei > 0n ? "up" : wei < 0n ? "down" : "";
+  return `<span class="chg ${tone}" title="${esc(exact)}">${esc(shown)}</span><small>${esc(counts)}</small>`;
+}
+
+function spanLabel(seconds) {
+  if (seconds == null) return "";
+  if (seconds === 0) return "launch";
+  const hours = seconds / 3600;
+  if (Number.isInteger(hours)) return `${hours}h`;
+  const minutes = seconds / 60;
+  if (Number.isInteger(minutes)) return `${minutes}m`;
+  return `${Math.round(minutes * 10) / 10}m`;
+}
+
+function customProfitCard(rows, launch) {
+  const span = state.realSpan;
+  const from = spanSeconds(span.from, span.fromUnit);
+  const to = spanSeconds(span.to, span.toUnit);
+  const invalid = from != null && to != null && to <= from;
+  const start = launch + (from || 0);
+  const end = to == null ? null : launch + to;
+  const fromText = from == null ? "launch" : spanLabel(from);
+  const toText = to == null ? "latest" : spanLabel(to);
+  const result = invalid ? "" : profitText(profitInSpan(rows, start, end));
+  const unit = (name, value) => `<select data-act="${name}" aria-label="${name.includes("from") ? "From unit" : "To unit"}">
+    <option value="m" ${value === "h" ? "" : "selected"}>min</option>
+    <option value="h" ${value === "h" ? "selected" : ""}>hour</option>
+  </select>`;
+  return `<article class="profit-window profit-custom">
+    <b>Custom</b>
+    <label class="span-row">From <input data-act="real-from" inputmode="decimal" aria-label="Custom start" value="${esc(span.from)}" />${unit("real-from-unit", span.fromUnit)}</label>
+    <label class="span-row">To <input data-act="real-to" inputmode="decimal" aria-label="Custom end" value="${esc(span.to)}" />${unit("real-to-unit", span.toUnit)}</label>
+    <small>${invalid ? "End must be after the start." : esc(`${fromText} to ${toText}`)}</small>
+    ${invalid ? "" : result}
+  </article>`;
+}
+
+function realProfitBar(rows, launch) {
+  if (!launch) return `<p class="buyers-note">Launch time is not known yet, so the time windows cannot be measured.</p>`;
+  const cards = REAL_WINDOWS.map(([, label, seconds]) => {
+    const result = profitInSpan(rows, launch, launch + seconds);
+    return `<article class="profit-window"><b>${esc(label)}</b>${profitText(result)}</article>`;
+  }).join("");
+  return `<div class="profit-windows" aria-label="Profit after launch">${cards}${customProfitCard(rows, launch)}</div>`;
+}
+
 function realBuyerTable(rows) {
   const columns = [
     { label: "No", key: "no", type: "number" },
@@ -1654,6 +1757,8 @@ function paintRealBuyers() {
     progress: ledger.progress || 0,
     progressLabel: ledger.progressLabel || "",
     rows: ledger.rows || [],
+    launch: realLaunch(ledger),
+    span: state.realSpan,
     sort: state.sort.realBuyers,
     page: state.pages.realBuyers,
     size: state.realPageSize,
@@ -1664,6 +1769,11 @@ function paintRealBuyers() {
     document.body.appendChild(root);
   }
   if (root.dataset.sig === signature) return;
+  const field = document.activeElement;
+  const typing = field && root.contains(field) && field.matches("input, select");
+  const typingAct = typing ? field.dataset.act || "" : "";
+  const caret = typing && typeof field.selectionStart === "number" ? field.selectionStart : null;
+  const caretEnd = typing && typeof field.selectionEnd === "number" ? field.selectionEnd : null;
   root.dataset.sig = signature;
   const token = (state.data?.tokens || []).find((item) => item.address === ledger.address);
   const title = token?.symbol || ledger.symbol || "Token";
@@ -1677,14 +1787,22 @@ function paintRealBuyers() {
         ? `<p class="muted buyers-note">Some trades are still being counted. The rows below are the ones finished so far.</p>`
         : "";
   const table = ledger.loading || ledger.error || waiting ? "" : realBuyerTable(ledger.rows || []);
-  const body = ledger.loading ? fetchProgress(ledger.progress, ledger.progressLabel) : `${note}${table}`;
+  const windows = ledger.loading || ledger.error || waiting ? "" : realProfitBar(ledger.rows || [], realLaunch(ledger));
+  const body = ledger.loading ? fetchProgress(ledger.progress, ledger.progressLabel) : `${note}${windows}${table}`;
   root.innerHTML = `<div class="buyers-back"><section class="buyers-modal" role="dialog" aria-modal="true" aria-label="Real buyers">
     <div class="buyers-head">
-      <div><h3>Real buyers · ${esc(title)}</h3><p class="muted">Every buy and sell that is not a team transaction.</p></div>
+      <div><h3>Real buyers · ${esc(title)}</h3><p class="muted">Every buy and sell that is not a team transaction. The figures are profit after the launch time.</p></div>
       <button class="icon-close" data-act="close-real" aria-label="Close">×</button>
     </div>
     ${body}
   </section></div>`;
+  if (typingAct) {
+    const next = root.querySelector(`[data-act="${CSS.escape(typingAct)}"]`);
+    if (next) {
+      next.focus();
+      if (caret != null && next.matches("input") && next.setSelectionRange) next.setSelectionRange(caret, caretEnd ?? caret);
+    }
+  }
 }
 
 async function loadRealBuyers(address) {
@@ -1701,11 +1819,13 @@ async function loadRealBuyers(address) {
     if (!response.ok) throw new Error(body.error || "Real buyers could not be loaded.");
     if (!state.realBuyers || state.realBuyers.address !== address) return;
     const ordered = [...(body.rows || [])].sort((a, b) => (Number(a.time) || Number(a.block) || 0) - (Number(b.time) || Number(b.block) || 0) || String(a.tx).localeCompare(String(b.tx)));
+    const known = (state.data?.tokens || []).find((item) => item.address === address);
     state.realBuyers = {
       address,
       loading: false,
       ready: Boolean(body.ready),
       symbol: body.symbol || "",
+      launchedAt: Number(known?.created_at) || 0,
       error: "",
       rows: ordered.map((row, index) => ({
         no: index + 1,
@@ -2395,6 +2515,18 @@ function onInput(event) {
     paintView();
     return;
   }
+  if (event.target.dataset.act === "real-from" || event.target.dataset.act === "real-to") {
+    const key = event.target.dataset.act === "real-from" ? "from" : "to";
+    state.realSpan[key] = event.target.value.replace(/[^\d.]/g, "").replace(/(\..*)\./g, "$1");
+    paintRealBuyers();
+    return;
+  }
+  if (event.target.dataset.act === "real-from-unit" || event.target.dataset.act === "real-to-unit") {
+    const key = event.target.dataset.act === "real-from-unit" ? "fromUnit" : "toUnit";
+    state.realSpan[key] = event.target.value === "h" ? "h" : "m";
+    paintRealBuyers();
+    return;
+  }
   if (event.target.dataset.act === "real-page-size") {
     const size = Number(event.target.value);
     state.realPageSize = [25, 50, 100].includes(size) ? size : 25;
@@ -2550,6 +2682,7 @@ async function onClick(event) {
   const button = event.target.closest("[data-act]");
   if (!button) return;
   const act = button.dataset.act;
+  if (act === "real-from" || act === "real-to" || act === "real-from-unit" || act === "real-to-unit") return;
   if (act === "route") {
     enterRoute(button.dataset.route);
     state.query = "";

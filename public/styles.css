@@ -326,6 +326,19 @@ tr.clickable:hover td { background: rgba(255,255,255,0.03); }
 .buyers-head h3 { margin: 0; letter-spacing: -0.03em; }
 .buyers-head p { margin: 4px 0 0; }
 .buyers-note { margin: 0 16px 8px; flex: none; }
+.profit-windows { display: flex; gap: 8px; overflow-x: auto; padding: 0 16px 12px; flex: none; }
+.profit-window {
+  flex: 0 0 auto; min-width: 128px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 12px; background: #171d27;
+}
+.profit-window b { display: block; margin-bottom: 4px; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+.profit-window small { display: block; margin-top: 2px; color: var(--muted); font-size: 11px; font-weight: 650; }
+.profit-custom { min-width: 228px; }
+.profit-custom .span-row { display: flex; align-items: center; gap: 6px; margin: 0 0 6px; color: var(--muted); font-size: 12px; font-weight: 700; }
+.profit-custom input, .profit-custom select {
+  width: 64px; min-width: 64px; flex: 0 0 64px; background: #0c1016; border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; outline: none;
+}
+.profit-custom select { width: 72px; min-width: 72px; flex-basis: 72px; }
+.profit-custom input:focus, .profit-custom select:focus { border-color: rgba(214, 242, 92, 0.55); }
 .fetch-panel { flex: 1; min-height: 180px; display: grid; place-items: center; padding: 28px 24px 36px; }
 .fetch-progress { width: min(440px, 100%); }
 .fetch-progress-top { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 8px; font-size: 13px; color: var(--muted); }
