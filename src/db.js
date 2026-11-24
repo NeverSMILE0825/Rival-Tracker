@@ -456,6 +456,7 @@ export function purgeCompetitorResults(id) {
   for (const row of deployers) {
     const left = Number(db.prepare("SELECT COUNT(*) AS n FROM fundings WHERE deployer = ?").get(row.deployer).n);
     if (left === 0) {
+      db.prepare("DELETE FROM token_swaps WHERE token_address IN (SELECT address FROM tokens WHERE deployer = ?)").run(row.deployer);
       db.prepare("DELETE FROM token_pairs WHERE token_address IN (SELECT address FROM tokens WHERE deployer = ?)").run(row.deployer);
       db.prepare("DELETE FROM tokens WHERE deployer = ?").run(row.deployer);
       db.prepare("DELETE FROM deployers WHERE address = ?").run(row.deployer);
@@ -491,6 +492,17 @@ if (!tokenColumns.some((column) => column.name === "ath_market_cap")) {
 }
 if (!tokenColumns.some((column) => column.name === "ath_checked_at")) {
   db.exec("ALTER TABLE tokens ADD COLUMN ath_checked_at INTEGER");
+}
+for (const [name, definition] of [
+  ["profit_wei", "TEXT"],
+  ["profit_buys", "INTEGER"],
+  ["profit_sells", "INTEGER"],
+  ["profit_block", "INTEGER"],
+  ["profit_checked_at", "INTEGER"],
+]) {
+  if (!tokenColumns.some((column) => column.name === name)) {
+    db.exec(`ALTER TABLE tokens ADD COLUMN ${name} ${definition}`);
+  }
 }
 
 const buyerTradeColumns = db.prepare("PRAGMA table_info(buyer_trades)").all();
@@ -529,6 +541,20 @@ db.exec(`
   );
 
   CREATE INDEX IF NOT EXISTS idx_tokens_created ON tokens(created_at);
+
+  CREATE TABLE IF NOT EXISTS token_swaps (
+    token_address TEXT NOT NULL,
+    tx_hash TEXT NOT NULL,
+    block_number INTEGER NOT NULL,
+    tx_to TEXT,
+    side TEXT NOT NULL DEFAULT '',
+    amount_wei TEXT NOT NULL DEFAULT '0',
+    measured INTEGER NOT NULL DEFAULT 0,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (token_address, tx_hash)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_token_swaps_token ON token_swaps(token_address, measured);
 `);
 
 db.exec(`
@@ -829,6 +855,119 @@ export function listTokensForAth(limit = 20) {
     )
     .all(now - 6 * 3600, now - 10 * 60, now - 6 * 3600, limit)
     .map((row) => row.address);
+}
+
+export function nextProfitToken(now) {
+  return db
+    .prepare(
+      `SELECT address, symbol, created_at, created_block, profit_block, profit_checked_at
+       FROM tokens
+       WHERE profit_checked_at IS NULL
+          OR (COALESCE(created_at, 0) >= ? AND profit_checked_at < ?)
+          OR profit_checked_at < ?
+       ORDER BY CASE WHEN profit_checked_at IS NULL THEN 0 ELSE 1 END,
+                CASE WHEN profit_checked_at IS NULL THEN -COALESCE(created_at, 0) ELSE profit_checked_at END
+       LIMIT 1`,
+    )
+    .get(now - 24 * 3600, now - 3 * 60, now - 15 * 60);
+}
+
+export function listProfitPairs(token) {
+  return db
+    .prepare("SELECT pair_address FROM token_pairs WHERE token_address = ?")
+    .all(token)
+    .map((row) => String(row.pair_address || "").toLowerCase())
+    .filter((pair) => /^0x[a-f0-9]{40}$/.test(pair));
+}
+
+export function rememberSwapTxs(token, rows) {
+  const insert = db.prepare(
+    "INSERT OR IGNORE INTO token_swaps(token_address, tx_hash, block_number) VALUES(?, ?, ?)",
+  );
+  db.exec("BEGIN");
+  try {
+    for (const row of rows) insert.run(token, row.hash, row.block);
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+export function setProfitBlock(token, block) {
+  db.prepare("UPDATE tokens SET profit_block = ? WHERE address = ?").run(block, token);
+}
+
+export function missingSwapTargets(token, limit) {
+  return db
+    .prepare(
+      `SELECT tx_hash FROM token_swaps
+       WHERE token_address = ? AND tx_to IS NULL
+       ORDER BY block_number
+       LIMIT ?`,
+    )
+    .all(token, limit)
+    .map((row) => row.tx_hash);
+}
+
+export function saveSwapTarget(token, hash, to) {
+  db.prepare("UPDATE token_swaps SET tx_to = ? WHERE token_address = ? AND tx_hash = ?").run(to, token, hash);
+}
+
+export function swapTargetCounts(token) {
+  return db
+    .prepare(
+      `SELECT tx_to AS dest, COUNT(*) AS n
+       FROM token_swaps
+       WHERE token_address = ? AND tx_to IS NOT NULL AND tx_to != ''
+       GROUP BY tx_to`,
+    )
+    .all(token);
+}
+
+export function nextUnmeasuredSwap(token, team) {
+  const excluded = team.length ? team : ["__none__"];
+  const marks = excluded.map(() => "?").join(",");
+  return db
+    .prepare(
+      `SELECT tx_hash, attempts FROM token_swaps
+       WHERE token_address = ? AND measured = 0 AND IFNULL(tx_to, '') NOT IN (${marks})
+       ORDER BY attempts, block_number
+       LIMIT 1`,
+    )
+    .get(token, ...excluded);
+}
+
+export function saveSwapMeasure(token, hash, side, wei) {
+  db.prepare(
+    `UPDATE token_swaps
+     SET side = ?, amount_wei = ?, measured = 1
+     WHERE token_address = ? AND tx_hash = ?`,
+  ).run(side, wei, token, hash);
+}
+
+export function noteSwapAttempt(token, hash) {
+  db.prepare("UPDATE token_swaps SET attempts = attempts + 1 WHERE token_address = ? AND tx_hash = ?").run(token, hash);
+}
+
+export function profitTotals(token, team) {
+  const excluded = team.length ? team : ["__none__"];
+  const marks = excluded.map(() => "?").join(",");
+  return db
+    .prepare(
+      `SELECT side, amount_wei FROM token_swaps
+       WHERE token_address = ? AND measured = 1 AND side IN ('buy', 'sell')
+         AND IFNULL(tx_to, '') NOT IN (${marks})`,
+    )
+    .all(token, ...excluded);
+}
+
+export function saveTokenProfit(token, fields) {
+  db.prepare(
+    `UPDATE tokens
+     SET profit_wei = ?, profit_buys = ?, profit_sells = ?, profit_block = ?, profit_checked_at = ?
+     WHERE address = ?`,
+  ).run(fields.wei, fields.buys, fields.sells, fields.block, fields.checkedAt, token);
 }
 
 export function saveTokenAth(address, ath) {

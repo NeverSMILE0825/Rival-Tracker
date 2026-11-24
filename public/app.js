@@ -493,6 +493,7 @@ function viewTokens() {
         { label: "Liquidity", key: "liquidity", type: "number", align: "right" },
         { label: "MCap", key: "mcap", type: "number", align: "right" },
         { label: "ATH", key: "ath", type: "number", align: "right" },
+        { label: "Profit", key: "profit", type: "number", align: "right" },
         { label: "24h", key: "change", type: "number", align: "right" },
         { label: "Total tx", key: "txTotal", type: "number", align: "right" },
         { label: "24h tx", key: "tx24h", type: "number", align: "right" },
@@ -623,6 +624,28 @@ function metric(label, value, tone = "") {
   return `<div class="metric"><span>${esc(label)}</span><strong class="${tone}">${esc(value)}</strong></div>`;
 }
 
+function countWord(count, singular, plural) {
+  return `${Number(count) || 0} ${Number(count) === 1 ? singular : plural}`;
+}
+
+function profitCell(token) {
+  if (!token.profitReady) return `<span class="muted" title="Profit is still being counted">…</span>`;
+  let value = 0n;
+  try {
+    value = BigInt(token.profitWei || "0");
+  } catch {
+    value = 0n;
+  }
+  const negative = value < 0n;
+  const abs = negative ? -value : value;
+  const whole = abs / 10n ** 18n;
+  const fullFrac = (abs % 10n ** 18n).toString().padStart(18, "0").replace(/0+$/, "");
+  const exact = `${negative ? "-" : ""}${whole}${fullFrac ? `.${fullFrac}` : ""} ETH`;
+  const shown = `${negative ? "-" : ""}${formatEth(abs.toString())} ETH (${countWord(token.profitBuys, "buy", "buys")} + ${countWord(token.profitSells, "sell", "sells")})`;
+  const tone = value > 0n ? "up" : value < 0n ? "down" : "";
+  return `<span class="chg ${tone}" title="${esc(exact)}">${esc(shown)}</span>`;
+}
+
 function tokenRow(token) {
   const exchange = token.label ? `<span class="exch">${esc(token.label)}</span>` : "";
   return `<tr class="clickable" data-act="drawer-token" data-address="${esc(token.address)}">
@@ -633,6 +656,7 @@ function tokenRow(token) {
     <td class="num">${esc(formatUsd(token.liquidity))}</td>
     <td class="num">${esc(formatUsd(token.mcap))}</td>
     <td class="num" title="${esc(exactUsd(token.ath))}">${esc(formatUsd(token.ath))}</td>
+    <td class="num">${profitCell(token)}</td>
     <td class="num">${changeCell(token.change)}</td>
     <td class="num">${esc(formatCount(token.txTotal))}</td>
     <td class="num">${esc(formatCount(token.tx24h))}</td>
@@ -679,6 +703,11 @@ function displayTokenRows() {
         liquidity: numberOrNull(pair.liquidity_usd),
         mcap: numberOrNull(pair.market_cap),
         ath: numberOrNull(token.ath_market_cap),
+        profit: token.profit_checked_at ? Number(token.profit_wei || 0) / 1e18 : null,
+        profitWei: token.profit_wei,
+        profitBuys: token.profit_buys,
+        profitSells: token.profit_sells,
+        profitReady: Boolean(token.profit_checked_at),
         change: numberOrNull(pair.price_change_24h),
         tx24h: numberOrNull(pair.txns_24h),
         txTotal: countedTx(token),
@@ -734,6 +763,7 @@ function sortValue(row, key) {
   if (key === "liquidity") return row.liquidity;
   if (key === "mcap") return row.mcap;
   if (key === "ath") return row.ath;
+  if (key === "profit") return row.profit;
   if (key === "change") return row.change;
   if (key === "txTotal") return row.txTotal;
   if (key === "tx24h") return row.tx24h;
