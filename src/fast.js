@@ -1,5 +1,5 @@
 import https from "node:https";
-import { addEvent, getSettings, hasEvent, saveSettings } from "./db.js";
+import { addEvent, getSettings, getToken, hasEvent, saveSettings } from "./db.js";
 import { ensureRivalToken, relateToken } from "./relate.js";
 import { notifyLaunch } from "./telegram.js";
 import { nowSec, sleep } from "./util.js";
@@ -126,7 +126,6 @@ async function considerPool(pool, createdAt, siblings = []) {
     name: token.name,
     symbol: token.symbol,
     createdAt,
-    createdTx: pool.creationTransaction || related.createdTx || "",
   });
   if (!saved || hasEvent("launch", address)) return "skip";
   if (isV4Pool(pool)) {
@@ -143,6 +142,7 @@ async function considerPool(pool, createdAt, siblings = []) {
     address,
     message: `${token.symbol} launched · ${related.rival}`,
   });
+  const stored = getToken(address);
   notifyLaunch({
     fast: true,
     symbol: token.symbol,
@@ -150,7 +150,7 @@ async function considerPool(pool, createdAt, siblings = []) {
     address,
     deployer: related.deployer,
     rival: related.rival,
-    launchedAt: createdAt,
+    launchedAt: Number(stored?.created_at) || createdAt,
     detectedAt,
     market: {
       pairAddress: pair,

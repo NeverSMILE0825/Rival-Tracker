@@ -546,6 +546,7 @@ for (const [name, definition] of [
   ["profit_sells", "INTEGER"],
   ["profit_block", "INTEGER"],
   ["profit_checked_at", "INTEGER"],
+  ["launch_checked_at", "INTEGER"],
 ]) {
   if (!tokenColumns.some((column) => column.name === name)) {
     db.exec(`ALTER TABLE tokens ADD COLUMN ${name} ${definition}`);
@@ -894,22 +895,51 @@ export function upsertToken(token) {
   return { created: !existing };
 }
 
-export function listTokensMissingLaunch() {
+export function listTokensForLaunchCheck() {
   return db
     .prepare(
       `SELECT address, created_tx, created_at, created_block
        FROM tokens
-       WHERE IFNULL(created_block, 0) = 0 OR IFNULL(created_at, 0) = 0`,
+       WHERE IFNULL(launch_checked_at, 0) = 0
+       ORDER BY created_at DESC`,
     )
     .all();
 }
 
 export function setTokenLaunch(address, launch) {
+  const createdAt = Number(launch.createdAt) || 0;
+  const block = Number(launch.createdBlock) || 0;
+  const tx = String(launch.createdTx || "");
+  const confirmed = launch.confirmed ? 1 : 0;
   db.prepare(
     `UPDATE tokens
-     SET created_at = ?, created_block = ?, created_tx = ?
+     SET created_at = ?,
+         created_block = CASE
+           WHEN ? > 0 THEN ?
+           WHEN ? = 1 AND ABS(IFNULL(created_at, 0) - ?) > 180 THEN 0
+           ELSE created_block
+         END,
+         created_tx = CASE
+           WHEN ? != '' THEN ?
+           WHEN ? = 1 AND ABS(IFNULL(created_at, 0) - ?) > 180 THEN ''
+           ELSE created_tx
+         END,
+         launch_checked_at = CASE WHEN ? = 1 THEN ? ELSE 0 END
      WHERE address = ?`,
-  ).run(launch.createdAt, launch.createdBlock, launch.createdTx, address);
+  ).run(
+    createdAt,
+    block,
+    block,
+    confirmed,
+    createdAt,
+    tx,
+    tx,
+    confirmed,
+    createdAt,
+    confirmed,
+    confirmed ? nowSec() : 0,
+    String(address || "").toLowerCase(),
+  );
 }
 
 export function listTokenAddresses(whereSql = "", params = []) {

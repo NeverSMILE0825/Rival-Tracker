@@ -13,14 +13,14 @@ const chromePath = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
 let pageSocket = null;
 let started = false;
 
-function send(ws, method, params = {}) {
+function send(ws, method, params = {}, timeout = 20000) {
   const id = Math.floor(Math.random() * 1e9);
   ws.send(JSON.stringify({ id, method, params }));
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       ws.removeEventListener("message", onMessage);
       reject(new Error("GMGN browser timed out"));
-    }, 20000);
+    }, timeout);
     const onMessage = (event) => {
       const message = JSON.parse(event.data);
       if (message.id !== id) return;
@@ -132,6 +132,31 @@ async function fetchAth(addresses) {
   const value = message.result?.result?.value;
   if (!value || value.status !== 200) throw new Error(value?.head || "GMGN ATH did not respond");
   return value.rows.filter((row) => /^0x[a-f0-9]{40}$/.test(row.address));
+}
+
+export async function tokenCreation(address) {
+  const token = String(address || "").toLowerCase();
+  if (!/^0x[a-f0-9]{40}$/.test(token)) return null;
+  const ws = await ensureSocket();
+  const message = await send(ws, "Runtime.evaluate", {
+    expression: `(async () => {
+      const response = await fetch("/mrwapi/v1/multi_token_info", {
+        method: "POST",
+        credentials: "include",
+        headers: { accept: "application/json", "content-type": "application/json" },
+        body: JSON.stringify({ chain: "eth", addresses: ${JSON.stringify([token])} })
+      });
+      if (!response.ok) return null;
+      const json = await response.json();
+      const row = (Array.isArray(json.data) ? json.data : []).find((item) => String(item.address || "").toLowerCase() === ${JSON.stringify(token)}) || {};
+      const createdAt = Number(row.creation_timestamp) || 0;
+      return createdAt > 0 ? createdAt : 0;
+    })()`,
+    awaitPromise: true,
+    returnByValue: true,
+  }, 8000);
+  const createdAt = Number(message.result?.result?.value) || 0;
+  return createdAt > 0 ? { createdAt } : null;
 }
 
 export function startAthWatch() {

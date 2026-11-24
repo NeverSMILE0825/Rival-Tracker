@@ -155,8 +155,15 @@ function formatCount(value) {
 }
 
 function launchedAt(token) {
-  if (Number(token.created_block) > 0 && token.created_at) return token.created_at;
-  return token.pair_created_at || token.created_at;
+  return launchStamp(token.created_at, token.created_block, token.pair_created_at);
+}
+
+function launchStamp(createdAt, createdBlock, pairAt) {
+  const created = Number(createdAt) || 0;
+  const pair = Number(pairAt) || 0;
+  if (created && Number(createdBlock) > 0) return created;
+  if (created && (!pair || created <= pair)) return created;
+  return pair || created || null;
 }
 
 function rivalsOf(fundings) {
@@ -742,9 +749,7 @@ function displayTokenRows() {
         quote: pair.quote_symbol || "",
         banner: token.banner_url || "",
         rival: rivalLabel(token.fundings),
-        launched: Number(token.created_block) > 0 && token.created_at
-          ? token.created_at
-          : pair.pair_created_at || token.pair_created_at || token.created_at || null,
+        launched: launchStamp(token.created_at, token.created_block, pair.pair_created_at || token.pair_created_at),
         liquidity: numberOrNull(pair.liquidity_usd),
         mcap: numberOrNull(pair.market_cap),
         ath: numberOrNull(token.ath_market_cap),

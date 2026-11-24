@@ -1,10 +1,11 @@
-import { contractCreations, normalTxs, readTokenMeta, transactionLaunch } from "./chain.js";
+import { contractCreations, normalTxs, readTokenMeta } from "./chain.js";
+import { lookupLaunch } from "./launch.js";
 import {
   getSettings,
   getToken,
   listCompetitors,
   listRivalCreators,
-  listTokensMissingLaunch,
+  listTokensForLaunchCheck,
   recordFunding,
   setTokenLaunch,
   tokenExists,
@@ -155,10 +156,9 @@ export async function ensureRivalToken(address, related, hints = {}) {
   const name = meta?.name || hints.name || "";
   const symbol = meta?.symbol || hints.symbol || "";
   if (!name || !symbol) return false;
-  const createdTx = hints.createdTx || related.createdTx || "";
-  const launch = await transactionLaunch(createdTx).catch(() => null);
+  const launch = await lookupLaunch(token, related.createdTx || "");
   const createdAt = launch?.createdAt || Number(hints.createdAt) || 0;
-  const createdBlock = launch?.createdBlock || Number(hints.createdBlock) || 0;
+  const createdBlock = launch?.createdBlock || 0;
   if (!createdAt) return false;
   upsertToken({
     address: token,
@@ -167,26 +167,29 @@ export async function ensureRivalToken(address, related, hints = {}) {
     symbol,
     decimals: meta?.decimals ?? hints.decimals ?? 18,
     createdAt,
-    createdTx: launch?.createdTx || createdTx,
+    createdTx: launch?.createdTx || "",
     createdBlock,
   });
+  if (launch?.createdAt) setTokenLaunch(token, launch);
   watchNarrative({ name, symbol, createdAt });
   return true;
 }
 
 export async function repairTokenLaunches() {
-  const rows = listTokensMissingLaunch();
+  const rows = listTokensForLaunchCheck();
   for (const row of rows) {
     try {
-      let tx = String(row.created_tx || "");
-      const created = await contractCreations([row.address]);
-      const official = String(created[0]?.txHash || created[0]?.tx_hash || "");
-      if (official) tx = official;
-      const launch = await transactionLaunch(tx);
-      if (launch) setTokenLaunch(row.address, launch);
+      const launch = await lookupLaunch(row.address, row.created_tx || "");
+      if (!launch?.createdAt) continue;
+      const previous = Number(row.created_at) || 0;
+      if (previous && launch.createdAt > previous + 180 && !launch.confirmed) continue;
+      if (Math.abs(previous - launch.createdAt) > 180) {
+        console.log("launch time", row.address, new Date(launch.createdAt * 1000).toISOString());
+      }
+      setTokenLaunch(row.address, launch);
     } catch (error) {
       console.error("launch time", row.address, error.message);
     }
-    await sleep(200);
+    await sleep(250);
   }
 }
