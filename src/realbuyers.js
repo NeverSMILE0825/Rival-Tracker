@@ -4,6 +4,7 @@ import { teamAddresses } from "./profit.js";
 import { ethToWei } from "./util.js";
 
 const cache = new Map();
+let ethQuote = { at: 0, usd: 0 };
 
 function getJson(url, headers = {}) {
   return new Promise((resolve, reject) => {
@@ -55,6 +56,25 @@ function realSwaps(token) {
     if (Number(row.measured) !== 1 || (side !== "buy" && side !== "sell")) return false;
     return !team.has(String(row.tx_to || "").toLowerCase());
   });
+}
+
+function eventUsd(event) {
+  const type = String(event?.type || "").toLowerCase();
+  const usd = Number(event?.amountUSD);
+  if ((type === "buy" || type === "sell") && Number.isFinite(usd) && usd >= 0) return usd;
+  return null;
+}
+
+async function ethUsd() {
+  if (ethQuote.usd > 0 && Date.now() - ethQuote.at < 60_000) return ethQuote.usd;
+  try {
+    const body = await getJson("https://api.dexscreener.com/tokens/v1/ethereum/0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2");
+    const price = Number(Array.isArray(body) ? body.find((pair) => Number(pair?.priceUsd) > 0)?.priceUsd : 0);
+    if (price > 0) ethQuote = { at: Date.now(), usd: price };
+    return price > 0 ? price : 0;
+  } catch {
+    return ethQuote.usd || 0;
+  }
 }
 
 function weiFromEth(value) {
@@ -158,10 +178,19 @@ export async function realBuyerTrades(address) {
       type,
       mcap,
       amountWei,
+      amountUsd: eventUsd(event),
       count: /^0x[a-f0-9]{40}$/.test(maker) ? makerCount.get(maker) || 1 : null,
       maker: /^0x[a-f0-9]{40}$/.test(maker) ? maker : "",
     };
   });
+  if (rows.some((row) => row.amountUsd == null && row.amountWei)) {
+    const price = await ethUsd();
+    if (price > 0) {
+      for (const row of rows) {
+        if (row.amountUsd == null && row.amountWei) row.amountUsd = (Number(row.amountWei) / 1e18) * price;
+      }
+    }
+  }
   const value = { ready, symbol: saved.symbol || "", name: saved.name || "", rows };
   cache.set(token, { at: Date.now(), ready: ready && rows.length > 0, value });
   return value;

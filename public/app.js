@@ -19,6 +19,7 @@ const state = {
   paidOnly: false,
   sort: { tokens: { key: "launched", dir: "desc" }, buyers: { key: "time", dir: "desc" }, realBuyers: { key: "time", dir: "desc" } },
   realBuyers: null,
+  buyerChart: null,
   realPageSize: 25,
 };
 
@@ -214,6 +215,7 @@ function paint() {
       </div>`;
     if (!document.documentElement.dataset.bound) {
       document.body.addEventListener("click", onClick);
+      document.body.addEventListener("mouseover", onChartHover);
       document.body.addEventListener("submit", onSubmit);
       document.body.addEventListener("input", onInput);
       document.body.addEventListener("change", onKeyFile);
@@ -229,6 +231,7 @@ function paint() {
   paintModal();
   paintDrawer();
   paintRealBuyers();
+  paintBuyerChart();
 }
 
 function paintNav() {
@@ -1490,6 +1493,7 @@ async function loadRealBuyers(address) {
         mcap: row.mcap == null ? null : Number(row.mcap),
         amount: row.amountWei ? Number(row.amountWei) / 1e18 : null,
         amountWei: row.amountWei || "",
+        amountUsd: row.amountUsd == null ? null : Number(row.amountUsd),
         count: row.count == null ? null : Number(row.count),
         maker: row.maker || "",
         tx: row.tx || "",
@@ -1502,6 +1506,215 @@ async function loadRealBuyers(address) {
   const root = document.getElementById("real-buyers");
   if (root) root.dataset.sig = "";
   paintRealBuyers();
+}
+
+const BUYER_ANIMALS = [
+  { id: "flea", label: "Flea", range: "≤ $1", color: "#bf8c00", w: 576, h: 512, path: "M164.5 107.4l33.4-73.5c5.5-12.1 .1-26.3-11.9-31.8s-26.3-.1-31.8 11.9L128 71.7 101.9 14.1C96.4 2 82.1-3.3 70.1 2.1S52.7 21.9 58.1 33.9l33.4 73.5c-10.2 7.1-18.2 17-22.9 28.6l-17 0-4.1-20.7c-2.6-13-15.2-21.4-28.2-18.8S-2.1 111.7 .5 124.7l8 40C10.7 175.9 20.6 184 32 184l32 0 0 23.3-37.8 9.5c-9.5 2.4-16.6 10.2-17.9 19.9l-8 56c-1.9 13.1 7.2 25.3 20.4 27.2s25.3-7.2 27.2-20.4l5.7-40 18.4-4.6C82.7 274.6 103.8 288 128 288s45.3-13.4 56.1-33.2l18.4 4.6 5.7 40c1.9 13.1 14 22.2 27.2 20.4s22.2-14 20.4-27.2l-8-56c-1.4-9.7-8.5-17.5-17.9-19.9L192 207.3l0-23.3 32 0c11.4 0 21.3-8.1 23.5-19.3l8-40c2.6-13-5.8-25.6-18.8-28.2s-25.6 5.8-28.2 18.8L204.3 136l-17 0c-4.7-11.6-12.7-21.5-22.9-28.6zM496 286.5l65.6-47c10.8-7.7 13.3-22.7 5.6-33.5s-22.7-13.3-33.5-5.6l-51.4 36.8 6.1-62.9c1.3-13.2-8.4-24.9-21.6-26.2s-24.9 8.4-26.2 21.6L432.8 250c-12.3 1-24.2 5.6-34.1 13.3L384 254.8l6.8-20c4.2-12.6-2.5-26.2-15-30.4s-26.2 2.5-30.4 15l-13.1 38.6c-3.7 10.8 .8 22.8 10.7 28.5l27.7 16L359 322.7 321.5 312c-9.4-2.7-19.5 .6-25.5 8.3l-34.9 44.5c-8.2 10.4-6.4 25.5 4.1 33.7s25.5 6.4 33.7-4.1l25-31.8 18.2 5.2c-.5 22.6 11 44.7 32 56.8s45.9 11 65.2-.7l13.6 13.2-15.1 37.5c-4.9 12.3 1 26.3 13.3 31.2s26.3-1 31.2-13.3L503.5 440c3.6-9.1 1.4-19.4-5.6-26.2l-28-27.1 11.6-20.1 27.7 16c9.9 5.7 22.5 3.7 30-4.9L566.2 347c8.7-10 7.8-25.1-2.2-33.9s-25.1-7.8-33.9 2.2l-13.9 15.9-14.7-8.5c1.7-12.4-.2-25-5.5-36.2z" },
+  { id: "shrimp", label: "Shrimp", range: "≤ $1,000", color: "#fa8e42", w: 512, h: 512, path: "M64 32C28.7 32 0 60.7 0 96s28.7 64 64 64l1 0c3.7 88.9 77 160 167 160l56 0 0-192-24 0L88.8 128 64 128c-17.7 0-32-14.3-32-32s14.3-32 32-32l400 0c8.8 0 16-7.2 16-16s-7.2-16-16-16L64 32zM224 456c0 13.3 10.7 24 24 24l72 0 0-72.2-64.1-22.4c-12.5-4.4-26.2 2.2-30.6 14.7s2.2 26.2 14.7 30.6l4.5 1.6C233 433.9 224 443.9 224 456zm128 23.3c36.4-3.3 69.5-17.6 96.1-39.6l-86.5-34.6c-3 1.8-6.2 3.2-9.6 4.3l0 69.9zM472.6 415c24.6-30.3 39.4-68.9 39.4-111c0-12.3-1.3-24.3-3.7-35.9L382.8 355.1c.8 3.4 1.2 7 1.2 10.6c0 4.6-.7 9-1.9 13.1L472.6 415zM336 128l-16 0 0 192 18.3 0c9.9 0 19.1 3.2 26.6 8.5l133.5-92.4C471.8 172.6 409.1 128 336 128zM168 192a24 24 0 1 1 48 0 24 24 0 1 1 -48 0z" },
+  { id: "fish", label: "Fish", range: "≤ $3,000", color: "#8183f4", w: 576, h: 512, path: "M275.2 38.4c-10.6-8-25-8.5-36.3-1.5S222 57.3 224.6 70.3l9.7 48.6c-19.4 9-36.9 19.9-52.4 31.5c-15.3 11.5-29 23.9-40.7 36.3L48.1 132.4c-12.5-7.3-28.4-5.3-38.6 4.9S-3 163.3 4.2 175.9L50 256 4.2 336.1c-7.2 12.6-5 28.4 5.3 38.6s26.1 12.2 38.6 4.9l93.1-54.3c11.8 12.3 25.4 24.8 40.7 36.3c15.5 11.6 33 22.5 52.4 31.5l-9.7 48.6c-2.6 13 3.1 26.3 14.3 33.3s25.6 6.5 36.3-1.5l77.6-58.2c54.9-4 101.5-27 137.2-53.8c39.2-29.4 67.2-64.7 81.6-89.5c5.8-9.9 5.8-22.2 0-32.1c-14.4-24.8-42.5-60.1-81.6-89.5c-35.8-26.8-82.3-49.8-137.2-53.8L275.2 38.4zM384 256a32 32 0 1 1 64 0 32 32 0 1 1 -64 0z" },
+  { id: "dolphin", label: "Dolphin", range: "≤ $10,000", color: "#818ea1", w: 512, h: 512, path: "M477.3 24.9c3.5-5.3 3.6-12.2 .1-17.6S467.7-.8 461.4 .2c-16.7 2.8-43.1 8.6-68.8 17C378 22 362.5 28 349 35.3C306.5 12.8 258 0 206.5 0L176 0C96.5 0 32 64.5 32 144c0 18.6 3.5 36.4 10 52.7L20.5 209.6C7.8 217.2 0 231 0 245.8C0 269.1 18.9 288 42.2 288L176 288l16 0 11.2 0 92 61.3c4.9 3.3 11.2 3.6 16.4 .8s8.5-8.2 8.5-14.1l0-48 6.6 0c31.7 0 57.4 25.7 57.4 57.4c0 30.6-24 55.8-54.5 57.3l-53.4 2.7c-20.2-33-56.3-53.4-95.4-53.4l-4.7 0c-5.5 0-10.7 2.9-13.6 7.6s-3.2 10.6-.7 15.6L190.1 432l-28.4 56.8c-2.5 5-2.2 10.8 .7 15.6s8.1 7.6 13.6 7.6l4.7 0c35.9 0 69.2-17.2 90.1-45.4l68 3.8c94.1 5.2 173.3-70 173.3-164.3c0-80.8-31.4-154.5-82.7-209.3l48-72zM176 120a24 24 0 1 1 0 48 24 24 0 1 1 0-48z" },
+  { id: "whale", label: "Whale", range: "> $10,000", color: "#35c4dc", w: 640, h: 512, path: "M175.8 13.4c-1-5.9-5.2-10.8-10.9-12.6s-12-.3-16.2 3.9L108 45.4C89.7 63.7 81.4 89.6 85.6 115.1l7.9 47.4L43.6 212.4C15.7 240.3 0 278.2 0 317.6C0 407.3 72.7 480 162.4 480L544 480c53 0 96-43 96-96l0-111.9C640 192.5 575.5 128 495.9 128c-82.5 0-162.4 29.5-225 83.2L156.4 309.4c-8 6.8-18.1 10.6-28.6 10.6l-1.1 0c-18.3 0-34.5-11.7-40.3-29c-4-12-2.4-25.2 4.3-35.9l37.6-60.1 44.7 7.5c25.5 4.2 51.5-4.1 69.7-22.3l40.7-40.7c4.2-4.2 5.8-10.5 3.9-16.2s-6.7-9.9-12.6-10.9L189.9 98.1 175.8 13.4zM400 280a24 24 0 1 1 0 48 24 24 0 1 1 0-48z" },
+];
+
+function buyerAnimal(usd) {
+  const value = Number(usd);
+  if (!Number.isFinite(value) || value <= 1) return BUYER_ANIMALS[0];
+  if (value <= 1000) return BUYER_ANIMALS[1];
+  if (value <= 3000) return BUYER_ANIMALS[2];
+  if (value <= 10000) return BUYER_ANIMALS[3];
+  return BUYER_ANIMALS[4];
+}
+
+function animalMark(animal, height) {
+  const width = height * (animal.w / animal.h);
+  return `<svg viewBox="0 0 ${animal.w} ${animal.h}" width="${width.toFixed(1)}" height="${height}" aria-hidden="true"><path fill="currentColor" d="${animal.path}"/></svg>`;
+}
+
+function chartTipHtml(row) {
+  const animal = buyerAnimal(row.amountUsd);
+  const type = row.type === "sell" ? "Sell" : "Buy";
+  return `<div class="chart-tip-title" style="color:${animal.color}">${animalMark(animal, 16)}<span>${esc(animal.label)}</span></div>
+    <dl>
+      <dt>No</dt><dd>${esc(row.no)}</dd>
+      <dt>Time</dt><dd>${esc(formatExact(row.time))}</dd>
+      <dt>Type</dt><dd><span class="pill ${row.type === "buy" ? "live" : "rugged"}">${type}</span></dd>
+      <dt>M. Cap</dt><dd>${esc(row.mcap == null ? "—" : exactUsd(row.mcap))}</dd>
+      <dt>Amount</dt><dd>${esc(row.amountWei ? `${formatEth(row.amountWei)} ETH` : "—")}</dd>
+      <dt>Count</dt><dd>${esc(row.count == null ? "—" : row.count)}</dd>
+      <dt>Maker</dt><dd class="addr">${esc(row.maker || "—")}</dd>
+      <dt>Tx</dt><dd><a href="https://etherscan.io/tx/${esc(row.tx)}" target="_blank" rel="noreferrer">Etherscan</a></dd>
+    </dl>`;
+}
+
+function buyerChartSvg(rows) {
+  const width = 1000;
+  const height = 520;
+  const pad = { l: 78, r: 46, t: 16, b: 46 };
+  const plotted = [];
+  rows.forEach((row, index) => {
+    if (!row.time || !(Number(row.mcap) > 0)) return;
+    plotted.push({ row, index });
+  });
+  if (!plotted.length) return `<p class="muted buyers-note">No real buyer trade has a time and market cap yet.</p>`;
+  const times = plotted.map((item) => item.row.time);
+  const caps = plotted.map((item) => Number(item.row.mcap));
+  let minT = Math.min(...times);
+  let maxT = Math.max(...times);
+  let minY = Math.min(...caps);
+  let maxY = Math.max(...caps);
+  if (minT === maxT) {
+    minT -= 60;
+    maxT += 60;
+  }
+  const ySpan = maxY - minY || maxY || 1;
+  minY = Math.max(0, minY - ySpan * 0.12);
+  maxY += ySpan * 0.12;
+  const xOf = (time) => pad.l + ((time - minT) / (maxT - minT)) * (width - pad.l - pad.r);
+  const yOf = (mcap) => pad.t + (1 - (mcap - minY) / (maxY - minY)) * (height - pad.t - pad.b);
+  const yTicks = [0, 1, 2, 3, 4].map((step) => minY + ((maxY - minY) * step) / 4);
+  const xTicks = [0, 1, 2, 3].map((step) => minT + ((maxT - minT) * step) / 3);
+  const grid = yTicks
+    .map((tick) => {
+      const y = yOf(tick);
+      return `<line x1="${pad.l}" y1="${y}" x2="${width - pad.r}" y2="${y}" class="chart-grid"/><text x="${pad.l - 8}" y="${y + 4}" text-anchor="end" class="chart-label">${esc(formatUsd(tick))}</text>`;
+    })
+    .join("");
+  const xLabels = xTicks
+    .map((tick, index) => {
+      const anchor = index === 0 ? "start" : index === xTicks.length - 1 ? "end" : "middle";
+      const x = index === 0 ? pad.l : index === xTicks.length - 1 ? width - pad.r : xOf(tick);
+      return `<text x="${x}" y="${height - 16}" text-anchor="${anchor}" class="chart-label">${esc(formatExact(tick).slice(5, 16))}</text>`;
+    })
+    .join("");
+  const symbols = BUYER_ANIMALS.map((animal) => `<symbol id="buyer-${animal.id}" viewBox="0 0 ${animal.w} ${animal.h}"><path fill="currentColor" d="${animal.path}"/></symbol>`).join("");
+  const rank = { flea: 0, shrimp: 1, fish: 2, dolphin: 3, whale: 4 };
+  const marks = plotted
+    .map((item) => ({ ...item, animal: buyerAnimal(item.row.amountUsd) }))
+    .sort((a, b) => rank[a.animal.id] - rank[b.animal.id])
+    .map((item) => {
+      const animal = item.animal;
+      const heightPx = 22;
+      const widthPx = heightPx * (animal.w / animal.h);
+      const x = xOf(item.row.time) - widthPx / 2;
+      const y = yOf(Number(item.row.mcap)) - heightPx / 2;
+      return `<g class="chart-point" data-index="${item.index}">
+        <rect x="${x - 4}" y="${y - 4}" width="${widthPx + 8}" height="${heightPx + 8}" fill="transparent"/>
+        <use href="#buyer-${animal.id}" x="${x}" y="${y}" width="${widthPx}" height="${heightPx}" style="color:${animal.color};pointer-events:none"/>
+      </g>`;
+    })
+    .join("");
+  return `<svg class="buyer-chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="Real buyer trades by time and market cap">
+    <defs>${symbols}</defs>
+    ${grid}
+    ${xLabels}
+    <text x="${(pad.l + width - pad.r) / 2}" y="${height - 2}" text-anchor="middle" class="chart-axis">Time (${esc(zoneLabel())})</text>
+    <text x="16" y="${(pad.t + height - pad.b) / 2}" text-anchor="middle" class="chart-axis" transform="rotate(-90 16 ${(pad.t + height - pad.b) / 2})">M. Cap</text>
+    <line x1="${pad.l}" y1="${pad.t}" x2="${pad.l}" y2="${height - pad.b}" class="chart-axis-line"/>
+    <line x1="${pad.l}" y1="${height - pad.b}" x2="${width - pad.r}" y2="${height - pad.b}" class="chart-axis-line"/>
+    ${marks}
+  </svg>`;
+}
+
+function paintBuyerChart() {
+  let root = document.getElementById("buyer-chart");
+  const chart = state.buyerChart;
+  if (!chart) {
+    root?.remove();
+    return;
+  }
+  const signature = JSON.stringify({
+    address: chart.address,
+    loading: chart.loading,
+    error: chart.error || "",
+    ready: chart.ready,
+    rows: chart.rows || [],
+  });
+  if (!root) {
+    root = document.createElement("div");
+    root.id = "buyer-chart";
+    document.body.appendChild(root);
+  }
+  if (root.dataset.sig === signature) return;
+  root.dataset.sig = signature;
+  const token = (state.data?.tokens || []).find((item) => item.address === chart.address);
+  const title = token?.symbol || chart.symbol || "Token";
+  const legend = BUYER_ANIMALS.map((animal) => `<span class="chart-key" style="color:${animal.color}">${animalMark(animal, 15)}<b>${esc(animal.label)}</b><span>${esc(animal.range)}</span></span>`).join("");
+  const note = chart.loading
+    ? `<p class="muted buyers-note">Reading real buyer trades…</p>`
+    : chart.error
+      ? `<p class="muted buyers-note">${esc(chart.error)}</p>`
+      : !chart.ready
+        ? `<p class="muted buyers-note">Some trades are still being counted. The chart shows the ones finished so far.</p>`
+        : "";
+  const plot = chart.loading || chart.error ? "" : buyerChartSvg(chart.rows || []);
+  root.innerHTML = `<div class="chart-back"><section class="buyers-modal chart-modal" role="dialog" aria-modal="true" aria-label="Buyer chart">
+    <div class="buyers-head">
+      <div><h3>Buyer chart · ${esc(title)}</h3><p class="muted">Each icon is one real buyer trade. The animal is the Dextools size of that trade.</p></div>
+      <button class="icon-close" data-act="close-chart" aria-label="Close">×</button>
+    </div>
+    <div class="chart-legend">${legend}</div>
+    ${note}
+    <div class="chart-stage">${plot}<div class="chart-tip" hidden></div></div>
+  </section></div>`;
+}
+
+async function loadBuyerChart(address) {
+  try {
+    const response = await fetch(`/api/tokens/${address}/real-buyers`);
+    const body = await response.json();
+    if (!response.ok) throw new Error(body.error || "Real buyers could not be loaded.");
+    if (!state.buyerChart || state.buyerChart.address !== address) return;
+    const ordered = [...(body.rows || [])].sort((a, b) => (Number(a.time) || Number(a.block) || 0) - (Number(b.time) || Number(b.block) || 0) || String(a.tx).localeCompare(String(b.tx)));
+    state.buyerChart = {
+      address,
+      loading: false,
+      ready: Boolean(body.ready),
+      symbol: body.symbol || "",
+      error: "",
+      rows: ordered.map((row, index) => ({
+        no: index + 1,
+        time: Number(row.time) || null,
+        type: row.type === "sell" ? "sell" : "buy",
+        mcap: row.mcap == null ? null : Number(row.mcap),
+        amountWei: row.amountWei || "",
+        amountUsd: row.amountUsd == null ? null : Number(row.amountUsd),
+        count: row.count == null ? null : Number(row.count),
+        maker: row.maker || "",
+        tx: row.tx || "",
+      })),
+    };
+  } catch (error) {
+    if (!state.buyerChart || state.buyerChart.address !== address) return;
+    state.buyerChart = { address, loading: false, ready: false, error: error.message, rows: [] };
+  }
+  const root = document.getElementById("buyer-chart");
+  if (root) root.dataset.sig = "";
+  paintBuyerChart();
+}
+
+function onChartHover(event) {
+  const tip = document.querySelector("#buyer-chart .chart-tip");
+  if (!tip || !state.buyerChart?.rows) return;
+  const point = event.target.closest?.(".chart-point");
+  if (!point) {
+    if (!event.target.closest?.(".chart-tip")) tip.hidden = true;
+    return;
+  }
+  const row = state.buyerChart.rows[Number(point.dataset.index)];
+  if (!row) return;
+  tip.hidden = false;
+  tip.innerHTML = chartTipHtml(row);
+  const stage = document.querySelector("#buyer-chart .chart-stage");
+  if (!stage) return;
+  const box = point.getBoundingClientRect();
+  const host = stage.getBoundingClientRect();
+  const tipBox = tip.getBoundingClientRect();
+  let left = box.right - host.left + 10;
+  let top = box.top - host.top - 6;
+  if (left + tipBox.width > host.width - 8) left = box.left - host.left - tipBox.width - 10;
+  if (top + tipBox.height > host.height - 8) top = Math.max(8, host.height - tipBox.height - 8);
+  tip.style.left = `${Math.max(8, left)}px`;
+  tip.style.top = `${Math.max(8, top)}px`;
 }
 
 function paintDrawer() {
@@ -1583,6 +1796,7 @@ function paintDrawer() {
         <button class="action" data-act="copy" data-value="${esc(token.address)}">Copy</button>
         <button class="action" data-act="drawer-wallet" data-address="${esc(token.deployer)}">Creator</button>
         <button class="action" data-act="real-buyers" data-address="${esc(token.address)}">Show Real Buyers</button>
+        <button class="action" data-act="buyer-chart" data-address="${esc(token.address)}">Show Buyer Chart</button>
       </div>
       <div class="section-label">Paid</div>
       ${paidCell(token.payments)}
@@ -1799,6 +2013,11 @@ async function runConfirm() {
 }
 
 async function onClick(event) {
+  if (event.target.classList?.contains("chart-back")) {
+    state.buyerChart = null;
+    paintBuyerChart();
+    return;
+  }
   if (event.target.classList?.contains("buyers-back")) {
     state.realBuyers = null;
     paintRealBuyers();
@@ -1828,6 +2047,18 @@ async function onClick(event) {
     state[button.dataset.key] = button.dataset.value;
     resetPage();
     paintView();
+    return;
+  }
+  if (act === "close-chart") {
+    state.buyerChart = null;
+    paintBuyerChart();
+    return;
+  }
+  if (act === "buyer-chart") {
+    const address = button.dataset.address;
+    state.buyerChart = { address, loading: true, ready: false, error: "", rows: [] };
+    paintBuyerChart();
+    loadBuyerChart(address);
     return;
   }
   if (act === "close-real") {
@@ -2147,6 +2378,11 @@ window.addEventListener("hashchange", () => {
 
 window.addEventListener("keydown", (event) => {
   if (event.key !== "Escape") return;
+  if (state.buyerChart) {
+    state.buyerChart = null;
+    paintBuyerChart();
+    return;
+  }
   if (state.realBuyers) {
     state.realBuyers = null;
     paintRealBuyers();
