@@ -335,6 +335,9 @@ tr.clickable:hover td { background: rgba(255,255,255,0.03); }
 .chart-label, .chart-axis { fill: var(--muted); font-size: 12px; font-family: inherit; }
 .chart-axis { font-size: 11px; letter-spacing: 0.06em; }
 .chart-point { cursor: pointer; }
+.chart-ring { fill: transparent; stroke-width: 2.4; }
+.chart-ring.buy { stroke: var(--green); }
+.chart-ring.sell { stroke: var(--red); }
 .chart-tip {
   position: absolute; z-index: 2; width: 280px; padding: 10px 12px;
   background: #1b2330; border: 1px solid var(--line); border-radius: 12px;

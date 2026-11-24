@@ -1596,11 +1596,12 @@ function buyerChartSvg(rows) {
       const animal = item.animal;
       const heightPx = 22;
       const widthPx = heightPx * (animal.w / animal.h);
-      const x = xOf(item.row.time) - widthPx / 2;
-      const y = yOf(Number(item.row.mcap)) - heightPx / 2;
+      const cx = xOf(item.row.time);
+      const cy = yOf(Number(item.row.mcap));
+      const side = item.row.type === "sell" ? "sell" : "buy";
       return `<g class="chart-point" data-index="${item.index}">
-        <rect x="${x - 4}" y="${y - 4}" width="${widthPx + 8}" height="${heightPx + 8}" fill="transparent"/>
-        <use href="#buyer-${animal.id}" x="${x}" y="${y}" width="${widthPx}" height="${heightPx}" style="color:${animal.color};pointer-events:none"/>
+        <circle class="chart-ring ${side}" cx="${cx}" cy="${cy}" r="16.5"/>
+        <use href="#buyer-${animal.id}" x="${cx - widthPx / 2}" y="${cy - heightPx / 2}" width="${widthPx}" height="${heightPx}" style="color:${animal.color};pointer-events:none"/>
       </g>`;
     })
     .join("");
@@ -1650,7 +1651,7 @@ function paintBuyerChart() {
   const plot = chart.loading || chart.error ? "" : buyerChartSvg(chart.rows || []);
   root.innerHTML = `<div class="chart-back"><section class="buyers-modal chart-modal" role="dialog" aria-modal="true" aria-label="Buyer chart">
     <div class="buyers-head">
-      <div><h3>Buyer chart · ${esc(title)}</h3><p class="muted">Each icon is one real buyer trade. The animal is the Dextools size of that trade.</p></div>
+      <div><h3>Buyer chart · ${esc(title)}</h3><p class="muted">Each icon is one real buyer trade. A green circle is a buy and a red circle is a sell.</p></div>
       <button class="icon-close" data-act="close-chart" aria-label="Close">×</button>
     </div>
     <div class="chart-legend">${legend}</div>
