@@ -872,7 +872,10 @@ export function upsertToken(token) {
        deployer = excluded.deployer,
        name = excluded.name,
        symbol = excluded.symbol,
-       decimals = excluded.decimals`,
+       decimals = excluded.decimals,
+       created_at = CASE WHEN tokens.created_block = 0 AND excluded.created_block > 0 THEN excluded.created_at ELSE tokens.created_at END,
+       created_tx = CASE WHEN tokens.created_block = 0 AND excluded.created_tx != '' THEN excluded.created_tx ELSE tokens.created_tx END,
+       created_block = CASE WHEN tokens.created_block = 0 AND excluded.created_block > 0 THEN excluded.created_block ELSE tokens.created_block END`,
   ).run(
     token.address,
     token.deployer,
@@ -884,6 +887,24 @@ export function upsertToken(token) {
     token.createdBlock,
   );
   return { created: !existing };
+}
+
+export function listTokensMissingLaunch() {
+  return db
+    .prepare(
+      `SELECT address, created_tx, created_at, created_block
+       FROM tokens
+       WHERE IFNULL(created_block, 0) = 0 OR IFNULL(created_at, 0) = 0`,
+    )
+    .all();
+}
+
+export function setTokenLaunch(address, launch) {
+  db.prepare(
+    `UPDATE tokens
+     SET created_at = ?, created_block = ?, created_tx = ?
+     WHERE address = ?`,
+  ).run(launch.createdAt, launch.createdBlock, launch.createdTx, address);
 }
 
 export function listTokenAddresses(whereSql = "", params = []) {

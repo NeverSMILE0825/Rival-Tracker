@@ -224,6 +224,18 @@ export async function getBlock(number) {
   return rpc("eth_getBlockByNumber", [`0x${block.toString(16)}`, true], 8000);
 }
 
+export async function transactionLaunch(txHash) {
+  const hash = String(txHash || "");
+  if (!/^0x[a-fA-F0-9]{64}$/.test(hash)) return null;
+  const tx = await rpc("eth_getTransactionByHash", [hash], 8000);
+  if (!tx?.blockNumber) return null;
+  const block = await rpc("eth_getBlockByNumber", [tx.blockNumber, false], 8000);
+  const createdAt = Number(BigInt(block?.timestamp || "0x0"));
+  const createdBlock = Number(BigInt(tx.blockNumber));
+  if (!createdAt || !createdBlock) return null;
+  return { createdAt, createdBlock, createdTx: hash.toLowerCase() };
+}
+
 async function liveRpc(method, params) {
   let lastError;
   for (const url of RPCS) {

@@ -27,6 +27,7 @@ import { startPaidWatch } from "./paid.js";
 import { startProfitWatch } from "./profit.js";
 import { autoScanTick, cachedScanRange, decorateScan, enqueueScan, getJob, refreshOne, startLiveTail, stopScan, warmScanRange } from "./scanner.js";
 import { headBlock } from "./chain.js";
+import { repairTokenLaunches } from "./relate.js";
 import { sendTrendSamples } from "./narrative.js";
 import { startTrendWatch, trendBoard } from "./trends.js";
 import { sendBuyerTest, sendTelegram, startBuyerInbox, startTelegramInbox } from "./telegram.js";
@@ -512,6 +513,7 @@ app.listen(port, "127.0.0.1", () => {
   startBuyerWatch();
   startProfitWatch();
   startTrendWatch();
+  repairTokenLaunches().catch((error) => console.error("launch time", error.message));
   startTelegramInbox();
   startBuyerInbox();
   warmScanRange().catch((error) => console.error("scan range", error.message));

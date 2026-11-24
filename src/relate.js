@@ -1,15 +1,17 @@
-import { contractCreations, normalTxs, readTokenMeta } from "./chain.js";
+import { contractCreations, normalTxs, readTokenMeta, transactionLaunch } from "./chain.js";
 import {
   getSettings,
   getToken,
   listCompetitors,
   listRivalCreators,
+  listTokensMissingLaunch,
   recordFunding,
+  setTokenLaunch,
   tokenExists,
   upsertToken,
 } from "./db.js";
 import { watchNarrative } from "./narrative.js";
-import { ethToWei, nowSec } from "./util.js";
+import { ethToWei, sleep } from "./util.js";
 
 const unrelatedUntil = new Map();
 const tokenMissUntil = new Map();
@@ -153,7 +155,11 @@ export async function ensureRivalToken(address, related, hints = {}) {
   const name = meta?.name || hints.name || "";
   const symbol = meta?.symbol || hints.symbol || "";
   if (!name || !symbol) return false;
-  const createdAt = hints.createdAt || nowSec();
+  const createdTx = hints.createdTx || related.createdTx || "";
+  const launch = await transactionLaunch(createdTx).catch(() => null);
+  const createdAt = launch?.createdAt || Number(hints.createdAt) || 0;
+  const createdBlock = launch?.createdBlock || Number(hints.createdBlock) || 0;
+  if (!createdAt) return false;
   upsertToken({
     address: token,
     deployer: related.deployer,
@@ -161,9 +167,26 @@ export async function ensureRivalToken(address, related, hints = {}) {
     symbol,
     decimals: meta?.decimals ?? hints.decimals ?? 18,
     createdAt,
-    createdTx: hints.createdTx || related.createdTx || "",
-    createdBlock: hints.createdBlock || 0,
+    createdTx: launch?.createdTx || createdTx,
+    createdBlock,
   });
   watchNarrative({ name, symbol, createdAt });
   return true;
+}
+
+export async function repairTokenLaunches() {
+  const rows = listTokensMissingLaunch();
+  for (const row of rows) {
+    try {
+      let tx = String(row.created_tx || "");
+      const created = await contractCreations([row.address]);
+      const official = String(created[0]?.txHash || created[0]?.tx_hash || "");
+      if (official) tx = official;
+      const launch = await transactionLaunch(tx);
+      if (launch) setTokenLaunch(row.address, launch);
+    } catch (error) {
+      console.error("launch time", row.address, error.message);
+    }
+    await sleep(200);
+  }
 }

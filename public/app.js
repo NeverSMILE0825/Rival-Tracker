@@ -154,6 +154,7 @@ function formatCount(value) {
 }
 
 function launchedAt(token) {
+  if (Number(token.created_block) > 0 && token.created_at) return token.created_at;
   return token.pair_created_at || token.created_at;
 }
 
@@ -727,7 +728,9 @@ function displayTokenRows() {
         quote: pair.quote_symbol || "",
         banner: token.banner_url || "",
         rival: rivalLabel(token.fundings),
-        launched: pair.pair_created_at || token.pair_created_at || token.created_at || null,
+        launched: Number(token.created_block) > 0 && token.created_at
+          ? token.created_at
+          : pair.pair_created_at || token.pair_created_at || token.created_at || null,
         liquidity: numberOrNull(pair.liquidity_usd),
         mcap: numberOrNull(pair.market_cap),
         ath: numberOrNull(token.ath_market_cap),
