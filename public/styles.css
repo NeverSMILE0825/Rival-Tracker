@@ -75,6 +75,9 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .btn.primary { background: var(--lime); color: #14180d; border-color: transparent; }
 .btn.primary:hover { background: #e4ff7a; }
 .btn.danger { color: #ffd0d6; border-color: rgba(255, 93, 115, 0.35); }
+.btn.icon-act { display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 34px; padding: 0; }
+.btn.icon-act.primary { color: #14180d; }
+.btn.icon-act.danger { color: #ff8b98; }
 .btn.live-toggle { display: inline-flex; align-items: center; gap: 8px; }
 .btn.live-toggle.on { background: var(--lime); color: #14180d; border-color: transparent; }
 .btn.live-toggle.on .dot { background: #14180d; box-shadow: none; }

@@ -60,6 +60,19 @@ function copyIcon(value) {
   return `<button type="button" class="icon-btn copy-icon" data-act="copy" data-value="${esc(value)}" aria-label="Copy address" title="Copy address"><svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path fill="none" stroke="currentColor" stroke-width="1.8" d="M6 16H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>`;
 }
 
+const ACTION_ICONS = {
+  add: `<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" d="M12 5v14M5 12h14"/></svg>`,
+  edit: `<svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" d="M4 20h4L18.5 9.5a2.1 2.1 0 0 0-3-3L5 17v3z"/><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M13.5 6.5l3 3"/></svg>`,
+  delete: `<svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M4 7h16M9 7V5h6v2M7 7l1 13h8l1-13M10 11v6M14 11v6"/></svg>`,
+};
+
+function iconAction({ kind, label, act = "", id = "", type = "button", extra = "" }) {
+  const tone = kind === "delete" ? " danger" : kind === "add" ? " primary" : "";
+  const actAttr = act ? ` data-act="${esc(act)}"` : "";
+  const idAttr = id !== "" && id != null ? ` data-id="${esc(id)}"` : "";
+  return `<button type="${type}" class="btn icon-act${tone}"${actAttr}${idAttr}${extra} aria-label="${esc(label)}" title="${esc(label)}">${ACTION_ICONS[kind]}</button>`;
+}
+
 function formatEth(wei) {
   if (wei == null || wei === "") return "—";
   const value = BigInt(wei);
@@ -1238,7 +1251,7 @@ function ensureTrends() {
 
 function viewRivals() {
   return `
-    <div class="toolbar"><button class="btn primary" data-act="add">Add rival</button></div>
+    <div class="toolbar">${iconAction({ kind: "add", label: "Add rival", act: "add" })}</div>
     <div class="rivals">
       ${state.data.competitors.map(rivalCard).join("")}
     </div>`;
@@ -1258,8 +1271,8 @@ function rivalCard(rival) {
     <div><b>${rival.tokens}</b><div class="muted">tokens</div></div>
     <div class="mini-actions">
       <button class="btn" data-act="scan" data-id="${rival.id}" ${scanning() ? "disabled" : ""}>Scan</button>
-      <button class="btn" data-act="edit" data-id="${rival.id}">Edit</button>
-      <button class="btn danger" data-act="remove" data-id="${rival.id}">Delete</button>
+      ${iconAction({ kind: "edit", label: "Edit", act: "edit", id: rival.id })}
+      ${iconAction({ kind: "delete", label: "Delete", act: "remove", id: rival.id })}
     </div>
     <div class="scan-cell" data-rival-card="${rival.id}">
       <div class="scan-row">
@@ -1462,8 +1475,8 @@ function manageBuyerTable(modal) {
       <td>${esc(name)}</td>
       <td class="addr">${esc(buyer.address)} ${copyIcon(buyer.address)}</td>
       <td class="mini-actions">
-        <button type="button" class="btn" data-act="edit-buyer" data-id="${buyer.id}">Edit</button>
-        <button type="button" class="btn danger" data-act="remove-buyer" data-id="${buyer.id}">Delete</button>
+        ${iconAction({ kind: "edit", label: "Edit", act: "edit-buyer", id: buyer.id })}
+        ${iconAction({ kind: "delete", label: "Delete", act: "remove-buyer", id: buyer.id })}
       </td>
     </tr>`;
   }).join("");
@@ -1504,7 +1517,7 @@ function paintManageBuyers(root) {
       <div class="field"><label>Address</label><input name="address" value="${esc(draft.address || "")}" required spellcheck="false" /></div>
       <div class="actions">
         ${modal.editing ? `<button class="btn" type="button" data-act="buyer-cancel">Cancel</button>` : ""}
-        <button class="btn primary" type="submit">${modal.editing ? "Save" : "Add buyer"}</button>
+        ${modal.editing ? `<button class="btn primary" type="submit">Save</button>` : iconAction({ kind: "add", label: "Add buyer", type: "submit" })}
       </div>
     </form>
     <div class="err" id="form-err">${esc(modal.error || "")}</div>
