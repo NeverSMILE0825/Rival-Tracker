@@ -56,6 +56,10 @@ function shortAddr(value) {
   return `${value.slice(0, 6)}…${value.slice(-4)}`;
 }
 
+function copyIcon(value) {
+  return `<button type="button" class="icon-btn copy-icon" data-act="copy" data-value="${esc(value)}" aria-label="Copy address" title="Copy address"><svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path fill="none" stroke="currentColor" stroke-width="1.8" d="M6 16H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>`;
+}
+
 function formatEth(wei) {
   if (wei == null || wei === "") return "—";
   const value = BigInt(wei);
@@ -1246,7 +1250,7 @@ function rivalCard(rival) {
     <i class="swatch" style="background:${esc(rival.color)}"></i>
     <div>
       <div class="name">${esc(rival.label)} ${rival.enabled ? "" : `<span class="pill drained">paused</span>`}</div>
-      <div class="addr">${esc(rival.address)} <button class="icon-btn" data-act="copy" data-value="${esc(rival.address)}">copy</button></div>
+      <div class="addr">${esc(rival.address)} ${copyIcon(rival.address)}</div>
       ${rival.notes ? `<div class="muted" style="margin-top:6px;white-space:normal">${esc(rival.notes)}</div>` : ""}
     </div>
     <div><b>${rival.waiting}</b><div class="muted">waiting</div></div>
@@ -1446,7 +1450,7 @@ function manageBuyerTable(modal) {
     if (modal.confirmId === buyer.id) {
       return `<tr>
         <td>${esc(name)}</td>
-        <td class="addr">${esc(buyer.address)}</td>
+        <td class="addr">${esc(buyer.address)} ${copyIcon(buyer.address)}</td>
         <td class="manage-confirm">
           <span>Delete ${esc(name)}? Saved trades for this wallet are removed.</span>
           <button type="button" class="btn danger" data-act="buyer-delete-yes" data-id="${buyer.id}">Delete</button>
@@ -1456,7 +1460,7 @@ function manageBuyerTable(modal) {
     }
     return `<tr class="${modal.editing === buyer.id ? "on" : ""}">
       <td>${esc(name)}</td>
-      <td class="addr">${esc(buyer.address)}</td>
+      <td class="addr">${esc(buyer.address)} ${copyIcon(buyer.address)}</td>
       <td class="mini-actions">
         <button type="button" class="btn" data-act="edit-buyer" data-id="${buyer.id}">Edit</button>
         <button type="button" class="btn danger" data-act="remove-buyer" data-id="${buyer.id}">Delete</button>
