@@ -1030,11 +1030,21 @@ export function listTokenSwaps(token) {
 }
 
 export function listTokenPairAddresses(token) {
+  return listBuyerPairs(token).map((pair) => pair.address);
+}
+
+export function listBuyerPairs(token) {
   return db
-    .prepare("SELECT pair_address FROM token_pairs WHERE token_address = ?")
+    .prepare(
+      `SELECT pair_address, IFNULL(txns_total, 0) AS txns_total
+       FROM token_pairs WHERE token_address = ?`,
+    )
     .all(String(token || "").toLowerCase())
-    .map((row) => String(row.pair_address || "").toLowerCase())
-    .filter((pair) => /^0x[a-f0-9]{40}$/.test(pair) || /^0x[a-f0-9]{64}$/.test(pair));
+    .map((row) => ({
+      address: String(row.pair_address || "").toLowerCase(),
+      txns: Number(row.txns_total) || 0,
+    }))
+    .filter((pair) => /^0x[a-f0-9]{40}$/.test(pair.address) || /^0x[a-f0-9]{64}$/.test(pair.address));
 }
 
 export function mainTokenPair(token) {

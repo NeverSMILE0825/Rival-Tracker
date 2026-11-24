@@ -1,5 +1,5 @@
 import https from "node:https";
-import { getToken, listTokenPairAddresses, listTokenSwaps, mainTokenPair } from "./db.js";
+import { getToken, listBuyerPairs, listTokenSwaps, mainTokenPair } from "./db.js";
 import { teamAddresses } from "./profit.js";
 import { ethToWei } from "./util.js";
 
@@ -170,10 +170,11 @@ async function tokenSupply(token) {
   return null;
 }
 
-async function pairEvents(pair) {
+async function pairEvents(pair, onPage) {
   const events = [];
   const seen = new Set();
   let cursor = null;
+  let fetched = 0;
   for (let page = 0; page < 300; page += 1) {
     const parts = ["limit=100"];
     if (cursor) {
@@ -194,31 +195,92 @@ async function pairEvents(pair) {
       events.push(event);
       added += 1;
     }
+    fetched += 1;
     const next = data.next;
-    if (!next || added === 0) break;
-    if (cursor && next.blockNumber === cursor.blockNumber && next.logIndex === cursor.logIndex) break;
+    const repeated = cursor && next && next.blockNumber === cursor.blockNumber && next.logIndex === cursor.logIndex;
+    const more = Boolean(next) && added > 0 && !repeated;
+    onPage?.(fetched, !more);
+    if (!more) break;
     cursor = next;
   }
   return events;
 }
 
-export async function realBuyerTrades(address) {
+const buyerProgress = new Map();
+const buyerFlights = new Map();
+
+function publishProgress(token, tracker, label) {
+  const done = tracker.parts.reduce((sum, part) => sum + part.done, 0) + tracker.extraDone;
+  const total = tracker.parts.reduce((sum, part) => sum + part.total, 0) + tracker.extraTotal;
+  const percent = total > 0 ? Math.min(99, Math.round((done / total) * 100)) : 0;
+  const previous = buyerProgress.get(token)?.percent || 0;
+  buyerProgress.set(token, { percent: Math.max(previous, percent), label });
+}
+
+function advancePair(token, tracker, index, used, finished, label) {
+  const part = tracker.parts[index];
+  if (!part) return;
+  if (finished) part.done = Math.max(part.done, part.total);
+  else {
+    if (used >= part.total) part.total = used + 1;
+    part.done = used;
+  }
+  publishProgress(token, tracker, label);
+}
+
+export function realBuyerProgress(address) {
   const token = String(address || "").toLowerCase();
-  const saved = getToken(token);
-  if (!saved) return null;
-  const cached = cache.get(token);
-  if (cached && Date.now() - cached.at < (cached.ready ? 60_000 : 15_000)) return cached.value;
+  return buyerProgress.get(token) || { percent: 0, label: "Fetching pool trades" };
+}
+
+async function loadRealBuyerTrades(token, saved) {
   const swaps = realSwaps(token);
   const ready = Boolean(saved.profit_checked_at);
-  const pairs = listTokenPairAddresses(token);
+  const pairs = listBuyerPairs(token);
+  const tracker = {
+    parts: pairs.map((pair) => ({ done: 0, total: Math.max(1, Math.ceil(pair.txns / 100)) })),
+    extraDone: 0,
+    extraTotal: 2,
+  };
+  buyerProgress.set(token, { percent: 0, label: "Fetching pool trades" });
+  publishProgress(token, tracker, "Fetching pool trades");
   const byTx = new Map();
   const makerCount = new Map();
   let supply = null;
   let chart = [];
   try {
-    const supplyPromise = tokenSupply(token).catch(() => null);
-    const chartPromise = supplyPromise.then((value) => tokenChart(saved, value).catch(() => []));
-    const lists = await Promise.all(pairs.map((pair) => pairEvents(pair).catch(() => [])));
+    const supplyPromise = tokenSupply(token)
+      .then((value) => {
+        tracker.extraDone += 1;
+        publishProgress(token, tracker, "Fetching token chart");
+        return value;
+      })
+      .catch(() => {
+        tracker.extraDone += 1;
+        publishProgress(token, tracker, "Fetching token chart");
+        return null;
+      });
+    const chartPromise = supplyPromise.then((value) =>
+      tokenChart(saved, value)
+        .then((rows) => {
+          tracker.extraDone += 1;
+          publishProgress(token, tracker, "Finishing");
+          return rows;
+        })
+        .catch(() => {
+          tracker.extraDone += 1;
+          publishProgress(token, tracker, "Finishing");
+          return [];
+        }),
+    );
+    const lists = await Promise.all(
+      pairs.map((pair, index) =>
+        pairEvents(pair.address, (used, finished) => advancePair(token, tracker, index, used, finished, "Fetching pool trades")).catch(() => {
+          advancePair(token, tracker, index, tracker.parts[index].total, true, "Fetching pool trades");
+          return [];
+        }),
+      ),
+    );
     for (const events of lists) {
       for (const event of events) {
         const id = String(event.id || "").toLowerCase();
@@ -268,5 +330,24 @@ export async function realBuyerTrades(address) {
   }
   const value = { ready, symbol: saved.symbol || "", name: saved.name || "", rows, chart };
   cache.set(token, { at: Date.now(), ready: ready && rows.length > 0, value });
+  buyerProgress.set(token, { percent: 100, label: "Ready" });
   return value;
+}
+
+export async function realBuyerTrades(address) {
+  const token = String(address || "").toLowerCase();
+  const saved = getToken(token);
+  if (!saved) return null;
+  const cached = cache.get(token);
+  if (cached && Date.now() - cached.at < (cached.ready ? 60_000 : 15_000)) {
+    buyerProgress.set(token, { percent: 100, label: "Ready" });
+    return cached.value;
+  }
+  const current = buyerFlights.get(token);
+  if (current) return current;
+  const flight = loadRealBuyerTrades(token, saved).finally(() => {
+    if (buyerFlights.get(token) === flight) buyerFlights.delete(token);
+  });
+  buyerFlights.set(token, flight);
+  return flight;
 }

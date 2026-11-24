@@ -1427,6 +1427,35 @@ function realBuyerTable(rows) {
   </div>`;
 }
 
+function fetchProgress(percent, label) {
+  const value = Math.max(0, Math.min(100, Math.round(Number(percent) || 0)));
+  const text = label || "Fetching pool trades";
+  return `<div class="fetch-panel"><div class="fetch-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${value}" aria-label="${esc(text)}">
+    <div class="fetch-progress-top"><span>${esc(text)}</span><b>${value}%</b></div>
+    <div class="fetch-progress-track"><span style="width:${value}%"></span></div>
+  </div></div>`;
+}
+
+function watchBuyerProgress(address, apply) {
+  let stopped = false;
+  const tick = async () => {
+    if (stopped) return;
+    try {
+      const response = await fetch(`/api/tokens/${address}/real-buyers/progress`);
+      const body = await response.json();
+      if (!stopped) apply(Number(body.percent) || 0, body.label || "Fetching pool trades");
+    } catch {
+      // The next tick tries again.
+    }
+  };
+  tick();
+  const timer = setInterval(tick, 400);
+  return () => {
+    stopped = true;
+    clearInterval(timer);
+  };
+}
+
 function paintRealBuyers() {
   let root = document.getElementById("real-buyers");
   const ledger = state.realBuyers;
@@ -1439,6 +1468,8 @@ function paintRealBuyers() {
     loading: ledger.loading,
     error: ledger.error || "",
     ready: ledger.ready,
+    progress: ledger.progress || 0,
+    progressLabel: ledger.progressLabel || "",
     rows: ledger.rows || [],
     sort: state.sort.realBuyers,
     page: state.pages.realBuyers,
@@ -1455,27 +1486,32 @@ function paintRealBuyers() {
   const title = token?.symbol || ledger.symbol || "Token";
   const waiting = !ledger.loading && !ledger.error && !ledger.ready && !(ledger.rows || []).length;
   const partial = !ledger.loading && !ledger.error && !ledger.ready && (ledger.rows || []).length > 0;
-  const note = ledger.loading
-    ? `<p class="muted buyers-note">Reading real buyer trades…</p>`
-    : ledger.error
-      ? `<p class="muted buyers-note">${esc(ledger.error)}</p>`
-      : waiting
-        ? `<p class="muted buyers-note">Real buyer trades are still being counted.</p>`
-        : partial
-          ? `<p class="muted buyers-note">Some trades are still being counted. The rows below are the ones finished so far.</p>`
-          : "";
+  const note = ledger.error
+    ? `<p class="muted buyers-note">${esc(ledger.error)}</p>`
+    : waiting
+      ? `<p class="muted buyers-note">Real buyer trades are still being counted.</p>`
+      : partial
+        ? `<p class="muted buyers-note">Some trades are still being counted. The rows below are the ones finished so far.</p>`
+        : "";
   const table = ledger.loading || ledger.error || waiting ? "" : realBuyerTable(ledger.rows || []);
+  const body = ledger.loading ? fetchProgress(ledger.progress, ledger.progressLabel) : `${note}${table}`;
   root.innerHTML = `<div class="buyers-back"><section class="buyers-modal" role="dialog" aria-modal="true" aria-label="Real buyers">
     <div class="buyers-head">
       <div><h3>Real buyers · ${esc(title)}</h3><p class="muted">Every buy and sell that is not a team transaction.</p></div>
       <button class="icon-close" data-act="close-real" aria-label="Close">×</button>
     </div>
-    ${note}
-    ${table}
+    ${body}
   </section></div>`;
 }
 
 async function loadRealBuyers(address) {
+  const stop = watchBuyerProgress(address, (percent, label) => {
+    if (!state.realBuyers || state.realBuyers.address !== address || !state.realBuyers.loading) return;
+    if (state.realBuyers.progress === percent && state.realBuyers.progressLabel === label) return;
+    state.realBuyers.progress = percent;
+    state.realBuyers.progressLabel = label;
+    paintRealBuyers();
+  });
   try {
     const response = await fetch(`/api/tokens/${address}/real-buyers`);
     const body = await response.json();
@@ -1504,6 +1540,8 @@ async function loadRealBuyers(address) {
   } catch (error) {
     if (!state.realBuyers || state.realBuyers.address !== address) return;
     state.realBuyers = { address, loading: false, ready: false, error: error.message, rows: [] };
+  } finally {
+    stop();
   }
   const root = document.getElementById("real-buyers");
   if (root) root.dataset.sig = "";
@@ -1805,6 +1843,8 @@ function paintBuyerChart() {
     ready: chart.ready,
     rows: chart.rows || [],
     candles: chart.candles || [],
+    progress: chart.progress || 0,
+    progressLabel: chart.progressLabel || "",
     view: chart.view || null,
   });
   if (!root) {
@@ -1817,26 +1857,33 @@ function paintBuyerChart() {
   const token = (state.data?.tokens || []).find((item) => item.address === chart.address);
   const title = token?.symbol || chart.symbol || "Token";
   const legend = `<span class="chart-key chart-token-key"><i></i><b>Token</b><span>M. Cap</span></span>${BUYER_ANIMALS.map((animal) => `<span class="chart-key" style="color:${animal.color}">${animalMark(animal, 15)}<b>${esc(animal.label)}</b><span>${esc(animal.range)}</span></span>`).join("")}`;
-  const note = chart.loading
-    ? `<p class="muted buyers-note">Reading real buyer trades…</p>`
-    : chart.error
-      ? `<p class="muted buyers-note">${esc(chart.error)}</p>`
-      : !chart.ready
-        ? `<p class="muted buyers-note">Some trades are still being counted. The chart shows the ones finished so far.</p>`
-        : "";
+  const note = chart.error
+    ? `<p class="muted buyers-note">${esc(chart.error)}</p>`
+    : !chart.ready && !chart.loading
+      ? `<p class="muted buyers-note">Some trades are still being counted. The chart shows the ones finished so far.</p>`
+      : "";
   const plot = chart.loading || chart.error ? "" : buyerChartSvg(chart.rows || [], chart.view || null, chart.candles || []);
+  const body = chart.loading
+    ? fetchProgress(chart.progress, chart.progressLabel)
+    : `${note}<div class="chart-stage">${plot}<div class="chart-tip" hidden></div></div>`;
   root.innerHTML = `<div class="chart-back"><section class="buyers-modal chart-modal" role="dialog" aria-modal="true" aria-label="Buyer chart">
     <div class="buyers-head">
       <div><h3>Buyer chart · ${esc(title)}</h3><p class="muted">The line is the token market cap. Each icon is a real buyer trade: a green circle is a buy and a red circle is a sell. Scroll up to zoom in and down to zoom out.</p></div>
       <button class="icon-close" data-act="close-chart" aria-label="Close">×</button>
     </div>
     <div class="chart-legend">${legend}</div>
-    ${note}
-    <div class="chart-stage">${plot}<div class="chart-tip" hidden></div></div>
+    ${body}
   </section></div>`;
 }
 
 async function loadBuyerChart(address) {
+  const stop = watchBuyerProgress(address, (percent, label) => {
+    if (!state.buyerChart || state.buyerChart.address !== address || !state.buyerChart.loading) return;
+    if (state.buyerChart.progress === percent && state.buyerChart.progressLabel === label) return;
+    state.buyerChart.progress = percent;
+    state.buyerChart.progressLabel = label;
+    paintBuyerChart();
+  });
   try {
     const response = await fetch(`/api/tokens/${address}/real-buyers`);
     const body = await response.json();
@@ -1872,6 +1919,8 @@ async function loadBuyerChart(address) {
   } catch (error) {
     if (!state.buyerChart || state.buyerChart.address !== address) return;
     state.buyerChart = { address, loading: false, ready: false, error: error.message, rows: [], candles: [] };
+  } finally {
+    stop();
   }
   const root = document.getElementById("buyer-chart");
   if (root) root.dataset.sig = "";
@@ -2243,7 +2292,7 @@ async function onClick(event) {
   }
   if (act === "buyer-chart") {
     const address = button.dataset.address;
-    state.buyerChart = { address, loading: true, ready: false, error: "", rows: [] };
+    state.buyerChart = { address, loading: true, ready: false, error: "", rows: [], progress: 0, progressLabel: "Fetching pool trades" };
     paintBuyerChart();
     loadBuyerChart(address);
     return;
@@ -2255,7 +2304,7 @@ async function onClick(event) {
   }
   if (act === "real-buyers") {
     const address = button.dataset.address;
-    state.realBuyers = { address, loading: true, ready: false, error: "", rows: [] };
+    state.realBuyers = { address, loading: true, ready: false, error: "", rows: [], progress: 0, progressLabel: "Fetching pool trades" };
     state.sort.realBuyers = { key: "time", dir: "desc" };
     state.pages.realBuyers = 1;
     paintRealBuyers();

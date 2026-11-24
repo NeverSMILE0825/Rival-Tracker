@@ -316,6 +316,12 @@ tr.clickable:hover td { background: rgba(255,255,255,0.03); }
 .buyers-head h3 { margin: 0; letter-spacing: -0.03em; }
 .buyers-head p { margin: 4px 0 0; }
 .buyers-note { margin: 0 16px 8px; flex: none; }
+.fetch-panel { flex: 1; min-height: 180px; display: grid; place-items: center; padding: 28px 24px 36px; }
+.fetch-progress { width: min(440px, 100%); }
+.fetch-progress-top { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 8px; font-size: 13px; color: var(--muted); }
+.fetch-progress-top b { color: var(--text); font-variant-numeric: tabular-nums; letter-spacing: 0.02em; }
+.fetch-progress-track { height: 8px; border-radius: 99px; background: rgba(255,255,255,0.08); overflow: hidden; }
+.fetch-progress-track span { display: block; height: 100%; width: 0; border-radius: inherit; background: linear-gradient(90deg, #8ea2ff, var(--green)); transition: width 0.28s ease; }
 .buyers-modal .table-panel { flex: 1; min-height: 0; display: flex; flex-direction: column; border: 0; border-radius: 0; background: transparent; }
 .buyers-modal .table-scroll { flex: 1; min-height: 0; max-height: none; }
 .buyers-modal .pager { flex: none; border-top: 1px solid var(--line); }
