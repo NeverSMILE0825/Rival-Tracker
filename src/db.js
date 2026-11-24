@@ -517,6 +517,12 @@ const pairColumns = db.prepare("PRAGMA table_info(token_pairs)").all();
 if (!pairColumns.some((column) => column.name === "quote_symbol")) {
   db.exec("ALTER TABLE token_pairs ADD COLUMN quote_symbol TEXT");
 }
+if (!pairColumns.some((column) => column.name === "txns_total")) {
+  db.exec("ALTER TABLE token_pairs ADD COLUMN txns_total INTEGER");
+}
+if (!pairColumns.some((column) => column.name === "is_main")) {
+  db.exec("ALTER TABLE token_pairs ADD COLUMN is_main INTEGER NOT NULL DEFAULT 0");
+}
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS telegram_chats (
@@ -557,15 +563,6 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_token_swaps_token ON token_swaps(token_address, measured);
 `);
 
-db.exec(`
-  UPDATE tokens
-  SET txns_total = (
-    SELECT SUM(txns_24h) FROM token_pairs WHERE token_address = tokens.address
-  )
-  WHERE COALESCE((
-    SELECT SUM(txns_24h) FROM token_pairs WHERE token_address = tokens.address
-  ), 0) > COALESCE(txns_total, 0)
-`);
 db.exec(`
   UPDATE tokens
   SET txns_total = txns_24h
@@ -1101,8 +1098,8 @@ export function replaceTokenPairs(tokenAddress, pairs) {
     const insert = db.prepare(
       `INSERT INTO token_pairs(
          pair_address, token_address, dex, label, quote_symbol, price_usd, liquidity_usd, market_cap,
-         volume_24h, price_change_24h, txns_24h, pair_created_at, status, dextools_url, dexscreener_url, updated_at
-       ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         volume_24h, price_change_24h, txns_24h, txns_total, is_main, pair_created_at, status, dextools_url, dexscreener_url, updated_at
+       ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
     const seen = new Set();
     for (const pair of pairs) {
@@ -1121,6 +1118,8 @@ export function replaceTokenPairs(tokenAddress, pairs) {
         pair.volume24h,
         pair.priceChange24h,
         pair.txns24h,
+        pair.txnsTotal ?? null,
+        pair.isMain ? 1 : 0,
         pair.pairCreatedAt,
         pair.status,
         pair.dextoolsUrl,

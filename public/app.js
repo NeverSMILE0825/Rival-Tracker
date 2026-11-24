@@ -647,7 +647,7 @@ function profitCell(token) {
 }
 
 function tokenRow(token) {
-  const exchange = token.label ? `<span class="exch">${esc(token.label)}</span>` : "";
+  const exchange = token.label ? `<span class="exch">${esc([token.label, token.quote].filter(Boolean).join(" "))}</span>` : "";
   return `<tr class="clickable" data-act="drawer-token" data-address="${esc(token.address)}">
     <td><span class="pill ${esc(token.status)}">${esc(token.status)}</span></td>
     <td class="token-cell"><span class="token-line">${tokenThumb(token)}<span class="token-name"><b>${esc(token.symbol)}</b> <span class="muted">(${esc(token.name)})</span>${exchange}</span></span></td>
@@ -710,7 +710,8 @@ function displayTokenRows() {
         profitReady: Boolean(token.profit_checked_at),
         change: numberOrNull(pair.price_change_24h),
         tx24h: numberOrNull(pair.txns_24h),
-        txTotal: countedTx(token),
+        txTotal: pairTxTotal(pair, token),
+        isMain: Number(pair.is_main) === 1,
         payments: token.payments || [],
         paid: (token.payments || []).reduce((latest, payment) => Math.max(latest, Number(payment.paid_at) || 0), 0) || null,
         pairAddress: pair.pair_address || token.pair_address || "",
@@ -732,14 +733,18 @@ function collapseMainV4(rows) {
   for (const row of rows) {
     if (row.label !== "v4") continue;
     const current = best.get(row.address);
-    const liquidity = Number(row.liquidity) || 0;
-    if (!current || liquidity > current.liquidity) best.set(row.address, { liquidity, pair: row.pairAddress });
+    if (!current || preferMain(row, current)) best.set(row.address, row);
   }
   return rows.filter((row) => {
     if (row.label !== "v4") return true;
     const winner = best.get(row.address);
-    return !winner || winner.pair === row.pairAddress;
+    return !winner || winner.pairAddress === row.pairAddress;
   });
+}
+
+function preferMain(row, current) {
+  if (row.isMain !== current.isMain) return row.isMain;
+  return (Number(row.txTotal) || 0) > (Number(current.txTotal) || 0);
 }
 
 function numberOrNull(value) {
@@ -748,8 +753,16 @@ function numberOrNull(value) {
   return Number.isFinite(number) ? number : null;
 }
 
+function pairTxTotal(pair, token) {
+  if (String(pair.label || "").toLowerCase() === "v4") {
+    if (pair.txns_total != null && pair.txns_total !== "") return numberOrNull(pair.txns_total);
+    return numberOrNull(pair.txns_24h);
+  }
+  return countedTx(token);
+}
+
 function countedTx(token) {
-  const pairs = token.pairs || [];
+  const pairs = (token.pairs || []).filter((pair) => String(pair.label || "").toLowerCase() !== "v4");
   const recent = pairs.reduce((sum, pair) => sum + (Number(pair.txns_24h) || 0), 0);
   const total = Math.max(Number(token.txns_total) || 0, Number(token.txns_24h) || 0, recent);
   return total > 0 ? total : null;
@@ -1289,6 +1302,15 @@ function paintModal() {
   root.dataset.id = String(modal.id || "");
 }
 
+function preferredPair(token) {
+  const pairs = token.pairs || [];
+  return (
+    pairs.find((pair) => Number(pair.is_main) === 1) ||
+    pairs.slice().sort((a, b) => (Number(b.txns_total) || 0) - (Number(a.txns_total) || 0) || (Number(b.liquidity_usd) || 0) - (Number(a.liquidity_usd) || 0))[0] ||
+    {}
+  );
+}
+
 function paintDrawer() {
   let root = document.getElementById("drawer-root");
   if (!state.drawer) {
@@ -1337,7 +1359,7 @@ function paintDrawer() {
   } else {
     const token = state.data.tokens.find((item) => item.address === drawer.address);
     if (!token) return;
-    const pair = (token.pairs || []).slice().sort((a, b) => Number(b.liquidity_usd) - Number(a.liquidity_usd))[0] || {};
+    const pair = preferredPair(token);
     const move = Number(token.price_change_24h);
     const moveTone = move > 0 ? "chg up" : move < 0 ? "chg down" : "";
     root.innerHTML = `<div class="drawer-back"><aside class="drawer">

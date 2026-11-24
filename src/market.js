@@ -1,4 +1,5 @@
 import { getSettings, getToken, listTokenAddresses, replaceTokenPairs, setTokenBanner, updateTokenMarket } from "./db.js";
+import { fetchAlikePools, fetchPairSwaps, pickMainV4, quoteScore } from "./v4pools.js";
 import { nowSec, sleep } from "./util.js";
 
 function classify(liquidity, peak, threshold) {
@@ -100,6 +101,98 @@ function largestCount(...values) {
   return Math.max(...counts);
 }
 
+function mapLimit(items, limit, fn) {
+  let cursor = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (cursor < items.length) {
+      const index = cursor;
+      cursor += 1;
+      await fn(items[index], index);
+    }
+  });
+  return Promise.all(workers);
+}
+
+function markMainPair(records) {
+  const v4 = records.filter((record) => String(record.label || "").toLowerCase() === "v4");
+  const choice = pickMainV4(
+    v4.map((record) => ({
+      id: String(record.pairAddress || "").toLowerCase(),
+      liquidity: Number(record.liquidityUsd) || 0,
+      quote: quoteScore(record.quoteSymbol),
+      tx: Number(record.txnsTotal) || 0,
+      fee: record.fee == null ? null : Number(record.fee),
+    })),
+  );
+  for (const record of records) {
+    record.isMain = choice && String(record.pairAddress || "").toLowerCase() === choice.id ? 1 : 0;
+  }
+  return records;
+}
+
+function displayPair(records) {
+  const main = records.find((record) => record.isMain);
+  if (main) return main;
+  return records.reduce((best, record) => {
+    if (!best || Number(record.liquidityUsd) > Number(best.liquidityUsd)) return record;
+    return best;
+  }, null);
+}
+
+async function attachV4Pairs(token, records, threshold) {
+  let pools = [];
+  try {
+    pools = await fetchAlikePools(token);
+  } catch (error) {
+    console.error("v4 pools", token, error.message);
+    return markMainPair(records);
+  }
+  const byId = new Map(records.map((record) => [String(record.pairAddress || "").toLowerCase(), record]));
+  for (const pool of pools) {
+    if (!pool.v4 || !pool.id) continue;
+    const existing = byId.get(pool.id);
+    if (existing) {
+      if (pool.tx > 0) existing.txnsTotal = pool.tx;
+      if (pool.fee != null) existing.fee = pool.fee;
+      if (!existing.quoteSymbol && pool.quote) existing.quoteSymbol = pool.quote;
+      continue;
+    }
+    byId.set(pool.id, {
+      pairAddress: pool.id,
+      dex: "uniswap",
+      label: "v4",
+      quoteSymbol: pool.quote || null,
+      priceUsd: pool.price,
+      liquidityUsd: pool.liquidity || 0,
+      marketCap: null,
+      volume24h: null,
+      priceChange24h: null,
+      txns24h: null,
+      txnsTotal: pool.tx || null,
+      pairCreatedAt: null,
+      status: pool.tx > 0 && !(pool.liquidity > 0) ? "thin" : pairStatus(pool.liquidity, threshold),
+      dextoolsUrl: dextoolsUrl(pool.id),
+      dexscreenerUrl: null,
+      fee: pool.fee,
+      liquidity: pool.liquidity || 0,
+    });
+  }
+  const merged = [...byId.values()];
+  const v4 = merged.filter((record) => String(record.label || "").toLowerCase() === "v4");
+  await mapLimit(v4, 3, async (record) => {
+    try {
+      const stats = await fetchPairSwaps(record.pairAddress);
+      if (!stats) return;
+      if (stats.tx != null) record.txnsTotal = stats.tx;
+      if (stats.tx24h != null) record.txns24h = stats.tx24h;
+      else if (stats.tx != null && stats.createdAt && Date.now() - stats.createdAt < 24 * 60 * 60 * 1000) record.txns24h = stats.tx;
+    } catch (error) {
+      console.error("v4 pair tx", record.pairAddress, error.message);
+    }
+  });
+  return markMainPair(merged);
+}
+
 function bestPair(pairs, token) {
   const want = String(token || "").toLowerCase();
   const records = pairs.filter((pair) => {
@@ -116,20 +209,19 @@ function bestPair(pairs, token) {
   return records[0] || null;
 }
 
-function rememberLaunchMarket(token, pairs) {
+async function rememberLaunchMarket(token, pairs) {
   const existing = getToken(token);
   if (!existing) return;
   const threshold = Number(getSettings().rugLiquidityUsd) || 1500;
   const records = pairs.filter((pair) => pair.pairAddress).map((pair) => pairRecord(pair, threshold));
   if (!records.length) return;
-  replaceTokenPairs(token, records);
-  const winner = records.reduce((best, record) => {
-    if (!best || record.liquidity > best.liquidity) return record;
-    return best;
-  }, null);
+  const enriched = await attachV4Pairs(token, records, threshold);
+  replaceTokenPairs(token, enriched);
+  const winner = displayPair(enriched);
+  if (!winner) return;
   const previousPeak = Number(existing.peak_liquidity_usd) || 0;
   const liquidity = Number(winner.liquidityUsd ?? 0);
-  const recentSwaps = records.reduce((sum, record) => sum + (Number(record.txns24h) || 0), 0);
+  const v4 = String(winner.label || "").toLowerCase() === "v4";
   updateTokenMarket(token, {
     pairAddress: winner.pairAddress || null,
     dex: winner.dex,
@@ -140,7 +232,7 @@ function rememberLaunchMarket(token, pairs) {
     volume24h: winner.volume24h,
     priceChange24h: winner.priceChange24h,
     txns24h: winner.txns24h,
-    txnsTotal: largestCount(recentSwaps, existing.txns_total),
+    txnsTotal: v4 ? (winner.txnsTotal == null ? null : winner.txnsTotal) : largestCount(winner.txns24h, existing.txns_total),
     peakLiquidityUsd: Math.max(previousPeak, liquidity),
     pairCreatedAt: winner.pairCreatedAt || existing.pair_created_at,
     status: classify(liquidity, Math.max(previousPeak, liquidity), threshold),
@@ -164,7 +256,7 @@ export async function lookupLaunchMarket(address) {
     await sleep(2500);
   }
   const best = bestPair(pairs, token);
-  if (best) rememberLaunchMarket(token, pairs.filter((pair) => String(pair.baseToken?.address || "").toLowerCase() === token));
+  if (best) await rememberLaunchMarket(token, pairs.filter((pair) => String(pair.baseToken?.address || "").toLowerCase() === token));
   const saved = best?.pairAddress ? null : getToken(token);
   const pairAddress = best?.pairAddress || saved?.pair_address || "";
   const header = pairs.map((pair) => pair.info?.header).find((url) => typeof url === "string" && url.startsWith("https://")) || "";
@@ -297,23 +389,22 @@ async function refreshMarketsNow(addresses, options = {}) {
     for (const address of chunk) {
       const existing = getToken(address);
       if (!existing) continue;
-      const records = grouped.get(address) || [];
+      const records = await attachV4Pairs(address, grouped.get(address) || [], threshold);
       replaceTokenPairs(address, records);
-      const winner = records.reduce((best, record) => {
-        if (!best || record.liquidity > best.liquidity) return record;
-        return best;
-      }, null);
+      const winner = displayPair(records);
       const previousPeak = Number(existing.peak_liquidity_usd) || 0;
+      const v4 = String(winner?.label || "").toLowerCase() === "v4";
       let indexedTotal = null;
-      if (options.transfers !== false) {
+      if (!v4 && options.transfers !== false) {
         try {
           indexedTotal = await fetchTransferCount(address);
         } catch (error) {
           console.error("transfer count skipped", address, error.message);
         }
       }
-      const recentSwaps = records.reduce((sum, record) => sum + (Number(record.txns24h) || 0), 0);
-      const txnsTotal = largestCount(indexedTotal, recentSwaps, existing.txns_total);
+      const txnsTotal = v4
+        ? winner?.txnsTotal == null ? null : winner.txnsTotal
+        : largestCount(indexedTotal, winner?.txns24h, existing.txns_total);
       if (!winner) {
         const status = classify(null, previousPeak, threshold);
         updateTokenMarket(address, {

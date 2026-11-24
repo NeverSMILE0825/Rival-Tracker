@@ -4,6 +4,7 @@ import { ensureRivalToken, relateToken } from "./relate.js";
 import { notifyLaunch } from "./telegram.js";
 import { nowSec, sleep } from "./util.js";
 import { watchPaid } from "./paid.js";
+import { fetchAlikePools, pickMainV4, quoteScore } from "./v4pools.js";
 
 const QUOTES = new Set([
   "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
@@ -62,64 +63,38 @@ function isV4Pool(pool) {
   return exchange === "dexe08a90" || /^0x[a-f0-9]{64}$/.test(address);
 }
 
-function quoteScore(symbol) {
-  const name = String(symbol || "").toLowerCase().replace(/[^a-z0-9]/g, "");
-  if (name === "eth" || name === "weth") return 50;
-  if (name === "usdc" || name === "usdt" || name === "usdcc" || name === "usdce" || name === "dai") return 20;
-  return 5;
-}
-
 function poolQuoteSymbol(pool, token) {
   const main = String(pool.mainToken?.address || "").toLowerCase();
   const quote = main === token ? pool.sideToken : pool.mainToken;
   return quote?.symbol || "";
 }
 
-export function pickMainV4(candidates) {
-  const ranked = [...candidates].sort((a, b) => {
-    const liquidity = Number(b.liquidity) - Number(a.liquidity);
-    if (liquidity) return liquidity;
-    const quote = b.quote - a.quote;
-    if (quote) return quote;
-    return String(a.id).localeCompare(String(b.id));
-  });
-  const winner = ranked[0];
-  if (!winner) return null;
-  const tied = ranked.filter((item) => item.liquidity === winner.liquidity && item.quote === winner.quote);
-  return { id: winner.id, tiedIds: tied.map((item) => item.id) };
-}
-
-async function listedV4Pairs(token) {
-  const response = await fetch(`https://api.dexscreener.com/token-pairs/v1/ethereum/${token}`, {
-    signal: AbortSignal.timeout(4000),
-  });
-  if (!response.ok) throw new Error(`Dexscreener HTTP ${response.status}`);
-  const payload = await response.json();
-  const rows = Array.isArray(payload) ? payload : payload.pairs || [];
-  return rows.filter((row) => (row.labels || []).some((label) => String(label).toLowerCase() === "v4"));
-}
-
 async function mainV4Gate(pool, token, createdAt, siblings) {
   const mine = String(pool.address || "").toLowerCase();
   const family = [pool, ...siblings];
   const candidates = new Map();
+  const remember = (item) => {
+    if (!item.id) return;
+    const current = candidates.get(item.id) || { id: item.id, liquidity: 0, quote: 0, tx: 0, fee: null };
+    current.liquidity = Math.max(current.liquidity, Number(item.liquidity) || 0);
+    current.quote = Math.max(current.quote, Number(item.quote) || 0);
+    current.tx = Math.max(current.tx, Number(item.tx) || 0);
+    if (item.fee != null && Number.isFinite(Number(item.fee))) current.fee = Number(item.fee);
+    candidates.set(item.id, current);
+  };
   for (const item of family) {
-    const id = String(item.address || "").toLowerCase();
-    if (!id) continue;
-    candidates.set(id, {
-      id,
-      liquidity: Number(item.liquidity) || 0,
+    remember({
+      id: String(item.address || "").toLowerCase(),
+      liquidity: item.liquidity,
       quote: quoteScore(poolQuoteSymbol(item, token)),
+      tx: item.txCount,
+      fee: item.fee,
     });
   }
   try {
-    for (const row of await listedV4Pairs(token)) {
-      const id = String(row.pairAddress || "").toLowerCase();
-      if (!/^0x[a-f0-9]{40,64}$/.test(id)) continue;
-      const current = candidates.get(id) || { id, liquidity: 0, quote: quoteScore(row.quoteToken?.symbol) };
-      current.liquidity = Math.max(current.liquidity, Number(row.liquidity?.usd) || 0);
-      current.quote = Math.max(current.quote, quoteScore(row.quoteToken?.symbol));
-      candidates.set(id, current);
+    for (const row of await fetchAlikePools(token)) {
+      if (!row.v4) continue;
+      remember({ id: row.id, liquidity: row.liquidity, quote: quoteScore(row.quote), tx: row.tx, fee: row.fee });
     }
   } catch (error) {
     console.error("v4 main pair", error.message);
@@ -132,6 +107,8 @@ async function mainV4Gate(pool, token, createdAt, siblings) {
   }, 0);
   const young = newest && nowSec() - newest < 45;
   if (choice.tiedIds.length > 1 && young && choice.tiedIds.includes(mine)) return "retry";
+  const winner = candidates.get(choice.id);
+  if (winner && winner.fee != null && winner.fee >= 10 && young && choice.id === mine) return "retry";
   if (choice.id !== mine) return "skip";
   return "send";
 }
