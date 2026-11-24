@@ -227,12 +227,47 @@ td.paid-cell { white-space: nowrap; }
 .pager-gap { color: var(--muted); padding: 0 2px; }
 .pager-size { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; }
 .pager-size select { background: #0c1016; color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; }
-.when { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.when input[type="date"] { width: 180px; flex: none; }
+.when { display: flex; align-items: center; gap: 8px; }
+.when .picker { flex: 1; min-width: 0; }
 .when .btn { flex: none; white-space: nowrap; }
-.clock { display: flex; align-items: center; gap: 6px; }
-.clock input { width: 72px; text-align: center; }
-.clock span { color: var(--muted); }
+.picker { position: relative; }
+.picker-value {
+  width: 100%; display: flex; align-items: center; gap: 10px; min-height: 42px; padding: 8px 12px;
+  border: 1px solid var(--line); border-radius: 10px; background: #0c1016; color: var(--text); text-align: left;
+}
+.picker-value:hover, .picker.open .picker-value { border-color: rgba(214, 242, 92, 0.55); }
+.picker-value b { font-weight: 700; }
+.picker-value .muted { margin-left: auto; }
+.picker-chevron { margin-left: auto; color: var(--muted); flex: none; }
+.picker-clock-label { margin-left: auto; color: var(--muted); font-variant-numeric: tabular-nums; }
+.picker-pop {
+  position: absolute; z-index: 40; top: calc(100% + 6px); left: 0; width: min(340px, calc(100vw - 48px));
+  background: #121820; border: 1px solid var(--line); border-radius: 16px; box-shadow: 0 18px 48px rgba(0, 0, 0, 0.45); padding: 12px;
+}
+.picker-pop.up { top: auto; bottom: calc(100% + 6px); }
+.picker-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+.picker-head b { font-size: 14px; }
+.cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; }
+.cal-dow, .cal-day { display: grid; place-items: center; height: 32px; border: 0; border-radius: 8px; background: transparent; color: var(--muted); font-size: 12px; font-weight: 650; }
+.cal-day { color: var(--text); }
+.cal-day:hover { background: rgba(255, 255, 255, 0.06); }
+.cal-day.out { color: rgba(232, 236, 244, 0.35); }
+.cal-day.today { box-shadow: inset 0 0 0 1px rgba(214, 242, 92, 0.7); }
+.cal-day.on { background: var(--lime); color: #14180d; }
+.cal-day.on:hover { background: #e4ff7a; }
+.picker-clock { display: grid; grid-template-columns: 1fr auto 1fr auto 1fr; gap: 6px; align-items: end; margin-top: 12px; }
+.picker-clock label { display: flex; flex-direction: column; gap: 4px; color: var(--muted); font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; font-weight: 700; }
+.picker-clock input { width: 100%; text-align: center; background: #0c1016; border: 1px solid var(--line); border-radius: 10px; padding: 8px 0; color: var(--text); font-variant-numeric: tabular-nums; }
+.picker-clock input:focus { border-color: rgba(214, 242, 92, 0.55); outline: none; }
+.picker-clock span { color: var(--muted); padding-bottom: 8px; }
+.picker-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.zone-search { width: 100%; margin-bottom: 8px; background: #0c1016; border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; color: var(--text); }
+.zone-search:focus { border-color: rgba(214, 242, 92, 0.55); outline: none; }
+.zone-menu { max-height: 280px; overflow: auto; display: flex; flex-direction: column; gap: 2px; }
+.zone-option { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; border: 0; border-radius: 8px; background: transparent; color: var(--text); padding: 8px 10px; text-align: left; }
+.zone-option:hover { background: rgba(255, 255, 255, 0.05); }
+.zone-option.on { background: rgba(214, 242, 92, 0.16); color: var(--lime); }
+.zone-option b { font-variant-numeric: tabular-nums; }
 .end-block { display: flex; gap: 8px; align-items: center; }
 .end-block input { flex: 1; min-width: 0; }
 .end-block .btn { flex: none; white-space: nowrap; }

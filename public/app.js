@@ -13,6 +13,7 @@ const state = {
   scanRangeMode: "",
   settingsDraft: null,
   settingsTab: "scan",
+  picker: null,
   pageSize: 50,
   pages: { waiting: 1, tokens: 1, buyers: 1, realBuyers: 1 },
   buyerFilter: "all",
@@ -265,12 +266,14 @@ function paint() {
   const view = document.getElementById("view");
   const field = document.activeElement;
   const typing = field && view?.contains(field) && field.matches("input, textarea");
+  const typingName = typing && field.name ? field.name : "";
   const typingAct = typing ? field.dataset.act || "" : "";
   const caret = typing ? field.selectionStart : null;
   const caretEnd = typing ? field.selectionEnd : null;
   if (!state.modal) paintView();
-  if (typingAct) {
-    const next = view.querySelector(`[data-act="${CSS.escape(typingAct)}"]`);
+  const focusQuery = typingName ? `[name="${CSS.escape(typingName)}"]` : typingAct ? `[data-act="${CSS.escape(typingAct)}"]` : "";
+  if (focusQuery) {
+    const next = view.querySelector(focusQuery);
     if (next && document.activeElement !== next) {
       next.focus();
       if (caret != null && next.setSelectionRange) next.setSelectionRange(caret, caretEnd);
@@ -425,6 +428,7 @@ function paintView() {
     nextScroller.scrollTop = scrollTop;
     nextScroller.scrollLeft = scrollLeft;
   }
+  placeOpenPicker();
 }
 
 function viewOverview() {
@@ -1355,15 +1359,162 @@ function checkedSetting(name) {
   return settings[name] === "1";
 }
 
-function clockInputs(prefix) {
-  return `<div class="clock"><input name="${prefix}Hour" inputmode="numeric" maxlength="2" placeholder="HH" value="${esc(fieldValue(`${prefix}Hour`) || "0")}" /><span>:</span><input name="${prefix}Minute" inputmode="numeric" maxlength="2" placeholder="MM" value="${esc(fieldValue(`${prefix}Minute`) || "0")}" /><span>:</span><input name="${prefix}Second" inputmode="numeric" maxlength="2" placeholder="SS" value="${esc(fieldValue(`${prefix}Second`) || "0")}" /></div>`;
+const ZONES = [
+  [-12, "Baker Island"],
+  [-11, "Pago Pago"],
+  [-10, "Honolulu"],
+  [-9, "Anchorage"],
+  [-8, "Los Angeles"],
+  [-7, "Denver"],
+  [-6, "Chicago"],
+  [-5, "New York"],
+  [-4, "Santiago"],
+  [-3, "São Paulo"],
+  [-2, "South Georgia"],
+  [-1, "Azores"],
+  [0, "London"],
+  [1, "Berlin"],
+  [2, "Cairo"],
+  [3, "Moscow"],
+  [4, "Dubai"],
+  [5, "Karachi"],
+  [6, "Dhaka"],
+  [7, "Bangkok"],
+  [8, "Singapore"],
+  [9, "Tokyo"],
+  [10, "Sydney"],
+  [11, "Noumea"],
+  [12, "Auckland"],
+  [13, "Apia"],
+  [14, "Kiritimati"],
+];
+const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+const MONTHS_SHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+function pad2(value) {
+  const n = Number(value);
+  if (!Number.isInteger(n)) return "00";
+  return String(Math.max(0, n)).padStart(2, "0");
 }
 
-function whenField(label, dateName, prefix, action) {
-  const button = action
-    ? `<button class="btn" type="button" data-act="${esc(action.act)}">${esc(action.label)}</button>`
-    : "";
-  return `<div class="field wide"><label>${label} (${zoneLabel()})</label><div class="when"><input type="date" name="${dateName}" value="${esc(fieldValue(dateName))}" />${clockInputs(prefix)}${button}</div></div>`;
+function draftZoneOffset() {
+  const offset = Number(fieldValue("timezoneOffset") || 9);
+  return Number.isInteger(offset) && offset >= -12 && offset <= 14 ? offset : 9;
+}
+
+function zoneText(offset) {
+  const value = Number.isInteger(Number(offset)) ? Number(offset) : 9;
+  const city = ZONES.find(([item]) => item === value)?.[1] || "Tokyo";
+  const sign = value === 0 ? "UTC" : `UTC${value > 0 ? "+" : ""}${value}`;
+  return { value, city, sign };
+}
+
+function dateText(iso) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(iso || ""));
+  if (!match) return "Choose a date";
+  return `${MONTHS_SHORT[Number(match[2]) - 1]} ${Number(match[3])}, ${match[1]}`;
+}
+
+function timeText(prefix) {
+  return `${pad2(fieldValue(`${prefix}Hour`) || "0")}:${pad2(fieldValue(`${prefix}Minute`) || "0")}:${pad2(fieldValue(`${prefix}Second`) || "0")}`;
+}
+
+function zonedToday() {
+  const shifted = new Date(Date.now() + draftZoneOffset() * 3600 * 1000);
+  return `${shifted.getUTCFullYear()}-${pad2(shifted.getUTCMonth() + 1)}-${pad2(shifted.getUTCDate())}`;
+}
+
+function shiftMonth(month, delta) {
+  const [year, part] = String(month || "").split("-").map(Number);
+  const date = new Date(Date.UTC(year || 2026, (part || 1) - 1 + delta, 1));
+  return `${date.getUTCFullYear()}-${pad2(date.getUTCMonth() + 1)}`;
+}
+
+function calendarCells(month, selected) {
+  const [year, part] = String(month).split("-").map(Number);
+  const lead = new Date(Date.UTC(year, part - 1, 1)).getUTCDay();
+  const start = Date.UTC(year, part - 1, 1 - lead);
+  return Array.from({ length: 42 }, (_, index) => {
+    const date = new Date(start + index * 86400000);
+    const iso = `${date.getUTCFullYear()}-${pad2(date.getUTCMonth() + 1)}-${pad2(date.getUTCDate())}`;
+    return { iso, day: date.getUTCDate(), outside: date.getUTCMonth() !== part - 1 };
+  }).map((cell) => ({ ...cell, selected: cell.iso === selected }));
+}
+
+function placeOpenPicker() {
+  const pop = document.querySelector(".picker.open .picker-pop");
+  if (!pop) return;
+  pop.classList.remove("up");
+  const rect = pop.getBoundingClientRect();
+  if (rect.bottom > window.innerHeight - 12) pop.classList.add("up");
+  const menu = pop.querySelector(".zone-menu");
+  const selected = menu?.querySelector(".on");
+  if (menu && selected) menu.scrollTop = Math.max(0, selected.offsetTop - menu.clientHeight / 2 + selected.clientHeight / 2);
+}
+
+function zonePicker() {
+  const zone = zoneText(draftZoneOffset());
+  const open = state.picker?.type === "zone";
+  const query = open ? String(state.picker.query || "") : "";
+  const needle = query.trim().toLowerCase();
+  const options = ZONES.map(([value, city]) => {
+    const text = zoneText(value);
+    const blob = `${text.sign} ${city} ${value}`.toLowerCase();
+    const hidden = needle && !blob.includes(needle) ? " hidden" : "";
+    return `<button type="button" class="zone-option ${value === zone.value ? "on" : ""}" data-act="picker-zone" data-offset="${value}" data-find="${esc(blob)}"${hidden}><span>${esc(city)}</span><b>${esc(text.sign)}</b></button>`;
+  }).join("");
+  return `<div class="picker ${open ? "open" : ""}">
+    <button type="button" class="picker-value" data-act="open-picker" data-picker="zone" aria-haspopup="listbox" aria-expanded="${open ? "true" : "false"}">
+      <b>${esc(zone.sign)}</b><span>${esc(zone.city)}</span>
+      <svg class="picker-chevron" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M6 9l6 6 6-6"/></svg>
+    </button>
+    <input type="hidden" name="timezoneOffset" value="${esc(zone.value)}" />
+    <div class="picker-pop" role="listbox" aria-label="Timezone"${open ? "" : " hidden"}>
+      <input class="zone-search" data-act="zone-search" value="${esc(query)}" placeholder="Search city or UTC offset" spellcheck="false" />
+      <div class="zone-menu">${options}</div>
+    </div>
+  </div>`;
+}
+
+function whenPicker(label, dateName, prefix, action) {
+  const date = fieldValue(dateName);
+  const time = timeText(prefix);
+  const open = state.picker?.type === "when" && state.picker.prefix === prefix;
+  const month = open ? state.picker.month : String(date || zonedToday()).slice(0, 7);
+  const [year, part] = month.split("-").map(Number);
+  const today = zonedToday();
+  const cells = calendarCells(month, date);
+  const days = cells
+    .map((cell) => {
+      const classes = ["cal-day", cell.outside ? "out" : "", cell.iso === today ? "today" : "", cell.selected ? "on" : ""].filter(Boolean).join(" ");
+      return `<button type="button" class="${classes}" data-act="picker-day" data-date="${esc(dateName)}" data-day="${esc(cell.iso)}" data-prefix="${esc(prefix)}">${cell.day}</button>`;
+    })
+    .join("");
+  const now = action ? `<button class="btn" type="button" data-act="${esc(action.act)}">${esc(action.label)}</button>` : "";
+  return `<div class="field wide"><label>${esc(label)}</label><div class="when"><div class="picker ${open ? "open" : ""}">
+    <button type="button" class="picker-value" data-act="open-picker" data-picker="when" data-prefix="${esc(prefix)}" data-date="${esc(dateName)}" aria-haspopup="dialog" aria-expanded="${open ? "true" : "false"}">
+      <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M3 10h18M8 3v4M16 3v4"/></svg>
+      <b>${esc(dateText(date))}</b><span class="picker-clock-label">${esc(time)}</span>
+    </button>
+    <input type="hidden" name="${esc(dateName)}" value="${esc(date)}" />
+    <div class="picker-pop" role="dialog" aria-label="${esc(label)}"${open ? "" : " hidden"}>
+      <div class="picker-head">
+        <button type="button" class="icon-btn" data-act="picker-month" data-prefix="${esc(prefix)}" data-delta="-1" aria-label="Previous month">‹</button>
+        <b>${esc(MONTHS[part - 1] || "")} ${esc(year || "")}</b>
+        <button type="button" class="icon-btn" data-act="picker-month" data-prefix="${esc(prefix)}" data-delta="1" aria-label="Next month">›</button>
+      </div>
+      <div class="cal-grid">${["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"].map((day) => `<span class="cal-dow">${day}</span>`).join("")}</div>
+      <div class="cal-grid">${days}</div>
+      <div class="picker-clock">
+        <label>Hour<input name="${esc(prefix)}Hour" data-act="picker-part" data-max="23" inputmode="numeric" maxlength="2" value="${esc(pad2(fieldValue(`${prefix}Hour`) || "0"))}" /></label>
+        <span>:</span>
+        <label>Min<input name="${esc(prefix)}Minute" data-act="picker-part" data-max="59" inputmode="numeric" maxlength="2" value="${esc(pad2(fieldValue(`${prefix}Minute`) || "0"))}" /></label>
+        <span>:</span>
+        <label>Sec<input name="${esc(prefix)}Second" data-act="picker-part" data-max="59" inputmode="numeric" maxlength="2" value="${esc(pad2(fieldValue(`${prefix}Second`) || "0"))}" /></label>
+      </div>
+      <div class="picker-foot"><span>${esc(dateText(date))} ${esc(time)}</span></div>
+    </div>
+  </div>${now}</div></div>`;
 }
 
 function scanRangeFields() {
@@ -1372,8 +1523,8 @@ function scanRangeFields() {
     return `<div class="field"><label>Start block</label><input name="scanStartBlock" inputmode="numeric" value="${esc(fieldValue("scanStartBlock"))}" placeholder="26200000" /></div>
       <div class="field"><label>End block</label><div class="end-block"><input name="scanEndBlock" inputmode="numeric" value="${esc(fieldValue("scanEndBlock"))}" placeholder="Latest block" /><button class="btn" type="button" data-act="latest-block">Latest block</button></div></div>`;
   }
-  return `${whenField("Start", "scanStartDate", "scanStart")}
-    ${whenField("End", "scanEndDate", "scanEnd", { act: "current-time", label: "Current time" })}`;
+  return `${whenPicker("Start", "scanStartDate", "scanStart")}
+    ${whenPicker("End", "scanEndDate", "scanEnd", { act: "current-time", label: "Now" })}`;
 }
 
 function telegramAudience() {
@@ -1414,7 +1565,7 @@ function viewSettings() {
         </div>
         <p class="keys-note">Saved wallets and tokens stay. A time scan runs from the start through the end in the timezone below. Blocks already saved are skipped.</p>
       </div>
-      <div class="field"><label>Timezone</label><div class="clock"><span>UTC</span><input name="timezoneOffset" inputmode="numeric" maxlength="3" placeholder="9" value="${esc(fieldValue("timezoneOffset") || "9")}" /></div></div>
+      <div class="field wide"><label>Timezone</label>${zonePicker()}</div>
       ${scanRangeFields()}
       <div class="field"><label>Auto scan every (minutes)</label><input name="scanIntervalMin" value="${esc(fieldValue("scanIntervalMin"))}" /></div>
       <div class="field"><label>Pages per pass</label><input name="maxPages" value="${esc(fieldValue("maxPages"))}" /></div>
@@ -2630,6 +2781,33 @@ function etherscanStatus(settings) {
 }
 
 function onInput(event) {
+  if (event.target.dataset.act === "zone-search") {
+    if (state.picker?.type !== "zone") return;
+    state.picker.query = event.target.value;
+    const needle = event.target.value.trim().toLowerCase();
+    for (const option of document.querySelectorAll(".zone-option")) {
+      option.hidden = Boolean(needle) && !option.dataset.find.includes(needle);
+    }
+    return;
+  }
+  if (event.target.dataset.act === "picker-part") {
+    const input = event.target;
+    const max = Number(input.dataset.max) || 59;
+    const digits = input.value.replace(/\D/g, "").slice(0, 2);
+    input.value = digits && Number(digits) > max ? String(max) : digits;
+    const picker = input.closest(".picker");
+    const hour = picker?.querySelector("[data-max='23']")?.value || "0";
+    const parts = [...(picker?.querySelectorAll("[data-act=picker-part]") || [])].map((node) => pad2(node.value || "0"));
+    const label = picker?.querySelector(".picker-clock-label");
+    const foot = picker?.querySelector(".picker-foot span");
+    const clock = parts.length === 3 ? parts.join(":") : `${pad2(hour)}:00:00`;
+    if (label) label.textContent = clock;
+    if (foot) {
+      const date = picker.querySelector("input[type=hidden]")?.value || "";
+      foot.textContent = `${dateText(date)} ${clock}`;
+    }
+    return;
+  }
   if (event.target.dataset.act === "etherscan-draft") {
     state.etherscanDraft = event.target.value;
     return;
@@ -2854,6 +3032,14 @@ async function onClick(event) {
   }
   if (event.target.closest("a") && !event.target.closest("a").dataset.act) return;
   const button = event.target.closest("[data-act]");
+  if (state.picker && !event.target.closest(".picker")) {
+    state.picker = null;
+    if (!button || button.dataset.act === "route") {
+      state.forceView = true;
+      paintView();
+      state.forceView = false;
+    }
+  }
   if (!button) return;
   const act = button.dataset.act;
   if (act === "real-from" || act === "real-to" || act === "real-from-unit" || act === "real-to-unit") return;
@@ -2940,6 +3126,49 @@ async function onClick(event) {
     paintView();
     return;
   }
+  if (act === "open-picker") {
+    const type = button.dataset.picker === "zone" ? "zone" : "when";
+    const prefix = button.dataset.prefix || "";
+    const same = state.picker?.type === type && (type === "zone" || state.picker.prefix === prefix);
+    if (same) state.picker = null;
+    else if (type === "zone") state.picker = { type: "zone", query: "" };
+    else {
+      const date = document.querySelector(`[name="${button.dataset.date}"]`)?.value || fieldValue(button.dataset.date);
+      state.picker = { type: "when", prefix, dateName: button.dataset.date, month: String(date || zonedToday()).slice(0, 7) };
+    }
+    state.forceView = true;
+    paintView();
+    state.forceView = false;
+    return;
+  }
+  if (act === "picker-month") {
+    if (state.picker?.type !== "when" || state.picker.prefix !== button.dataset.prefix) return;
+    state.picker.month = shiftMonth(state.picker.month, Number(button.dataset.delta) || 0);
+    state.forceView = true;
+    paintView();
+    state.forceView = false;
+    return;
+  }
+  if (act === "picker-day") {
+    const input = document.querySelector(`[name="${button.dataset.date}"]`);
+    if (input) input.value = button.dataset.day;
+    if (state.picker?.type === "when") state.picker.month = String(button.dataset.day || "").slice(0, 7);
+    captureSettingsDraft();
+    state.forceView = true;
+    paintView();
+    state.forceView = false;
+    return;
+  }
+  if (act === "picker-zone") {
+    const input = document.querySelector("[name=timezoneOffset]");
+    if (input) input.value = button.dataset.offset;
+    state.picker = null;
+    captureSettingsDraft();
+    state.forceView = true;
+    paintView();
+    state.forceView = false;
+    return;
+  }
   if (act === "settings-tab") {
     const tab = button.dataset.tab;
     if (!SETTINGS_TABS.some(([id]) => id === tab) || tab === settingsTabId()) return;
@@ -2968,7 +3197,10 @@ async function onClick(event) {
       const input = document.querySelector(`[name="${name}"]`);
       if (input) input.value = value;
     }
-    toast(`End time ${parts.scanEndDate} ${parts.scanEndHour}:${parts.scanEndMinute}:${parts.scanEndSecond}`);
+    state.forceView = true;
+    paintView();
+    state.forceView = false;
+    toast("End time set to now");
     return;
   }
   if (act === "latest-block") {
@@ -3263,6 +3495,13 @@ window.addEventListener("hashchange", () => {
 
 window.addEventListener("keydown", (event) => {
   if (event.key !== "Escape") return;
+  if (state.picker) {
+    state.picker = null;
+    state.forceView = true;
+    paintView();
+    state.forceView = false;
+    return;
+  }
   if (state.buyerChart) {
     state.buyerChart = null;
     paintBuyerChart();
