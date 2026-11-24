@@ -1,5 +1,5 @@
 import https from "node:https";
-import { getToken, listTokenPairAddresses, listTokenSwaps } from "./db.js";
+import { getToken, listTokenPairAddresses, listTokenSwaps, mainTokenPair } from "./db.js";
 import { teamAddresses } from "./profit.js";
 import { ethToWei } from "./util.js";
 
@@ -87,6 +87,77 @@ function weiFromEth(value) {
   }
 }
 
+async function gecko(url) {
+  const response = await fetch(url, {
+    headers: { accept: "application/json", "user-agent": "RivalTracker/1.0" },
+    signal: AbortSignal.timeout(12000),
+  });
+  if (!response.ok) throw new Error(`Chart HTTP ${response.status}`);
+  return response.json();
+}
+
+function candlePlan(span) {
+  if (span <= 6 * 3600) return { frame: "minute", aggregate: 1 };
+  if (span <= 36 * 3600) return { frame: "minute", aggregate: 5 };
+  if (span <= 10 * 86400) return { frame: "minute", aggregate: 15 };
+  if (span <= 40 * 86400) return { frame: "hour", aggregate: 1 };
+  return { frame: "hour", aggregate: 4 };
+}
+
+async function poolCloses(pair, fromSec) {
+  const now = Math.floor(Date.now() / 1000);
+  const plan = candlePlan(Math.max(300, now - fromSec));
+  const rows = [];
+  let before = null;
+  for (let page = 0; page < 4; page += 1) {
+    const older = before ? `&before_timestamp=${before}` : "";
+    const body = await gecko(
+      `https://api.geckoterminal.com/api/v2/networks/eth/pools/${pair}/ohlcv/${plan.frame}?aggregate=${plan.aggregate}&limit=1000&currency=usd${older}`,
+    );
+    const list = body?.data?.attributes?.ohlcv_list || [];
+    if (!list.length) break;
+    for (const item of list) {
+      const time = Number(item?.[0]);
+      const close = Number(item?.[4]);
+      if (time > 0 && close > 0) rows.push({ time, close, high: Number(item?.[2]) || close, low: Number(item?.[3]) || close });
+    }
+    const oldest = Number(list[list.length - 1]?.[0]);
+    if (!oldest || oldest <= fromSec || list.length < 1000) break;
+    before = oldest;
+  }
+  const unique = [];
+  for (const row of rows.sort((a, b) => a.time - b.time)) {
+    if (row.time < fromSec - 3600) continue;
+    if (unique.length && unique[unique.length - 1].time === row.time) unique[unique.length - 1] = row;
+    else unique.push(row);
+  }
+  return unique;
+}
+
+async function topGeckoPool(token) {
+  const body = await gecko(`https://api.geckoterminal.com/api/v2/networks/eth/tokens/${token}/pools?page=1`);
+  const id = String(body?.data?.[0]?.id || "");
+  const pool = id.slice(id.indexOf("_") + 1).toLowerCase();
+  return /^0x[a-f0-9]{40}$/.test(pool) || /^0x[a-f0-9]{64}$/.test(pool) ? pool : "";
+}
+
+async function tokenChart(tokenRow, supply) {
+  if (!(supply > 0)) return [];
+  const preferred = mainTokenPair(tokenRow.address);
+  const from = Number(tokenRow.pair_created_at) || Number(tokenRow.created_at) || Math.floor(Date.now() / 1000) - 30 * 86400;
+  let candles = preferred ? await poolCloses(preferred, from).catch(() => []) : [];
+  if (candles.length < 2) {
+    const pool = await topGeckoPool(tokenRow.address).catch(() => "");
+    if (pool && pool !== preferred) candles = await poolCloses(pool, from).catch(() => []);
+  }
+  return candles.map((row) => ({
+    time: row.time,
+    mcap: row.close * supply,
+    high: row.high * supply,
+    low: row.low * supply,
+  }));
+}
+
 async function tokenSupply(token) {
   const body = await getJson(`https://www.dextools.io/shared/data/token?tokens=ether:${token}`);
   const metrics = body?.data?.[0]?.metrics || {};
@@ -143,7 +214,10 @@ export async function realBuyerTrades(address) {
   const byTx = new Map();
   const makerCount = new Map();
   let supply = null;
+  let chart = [];
   try {
+    const supplyPromise = tokenSupply(token).catch(() => null);
+    const chartPromise = supplyPromise.then((value) => tokenChart(saved, value).catch(() => []));
     const lists = await Promise.all(pairs.map((pair) => pairEvents(pair).catch(() => [])));
     for (const events of lists) {
       for (const event of events) {
@@ -157,7 +231,8 @@ export async function realBuyerTrades(address) {
         if (!current || ((type === "buy" || type === "sell") && current.type !== "buy" && current.type !== "sell")) byTx.set(id, event);
       }
     }
-    supply = await tokenSupply(token);
+    supply = await supplyPromise;
+    chart = await chartPromise;
   } catch (error) {
     console.error("real buyers", token, error.message);
   }
@@ -191,7 +266,7 @@ export async function realBuyerTrades(address) {
       }
     }
   }
-  const value = { ready, symbol: saved.symbol || "", name: saved.name || "", rows };
+  const value = { ready, symbol: saved.symbol || "", name: saved.name || "", rows, chart };
   cache.set(token, { at: Date.now(), ready: ready && rows.length > 0, value });
   return value;
 }

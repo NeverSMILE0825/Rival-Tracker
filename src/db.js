@@ -1037,6 +1037,23 @@ export function listTokenPairAddresses(token) {
     .filter((pair) => /^0x[a-f0-9]{40}$/.test(pair) || /^0x[a-f0-9]{64}$/.test(pair));
 }
 
+export function mainTokenPair(token) {
+  const address = String(token || "").toLowerCase();
+  const row = db
+    .prepare(
+      `SELECT pair_address FROM token_pairs
+       WHERE token_address = ? AND IFNULL(pair_address, '') != ''
+       ORDER BY is_main DESC, IFNULL(txns_total, 0) DESC, IFNULL(liquidity_usd, 0) DESC
+       LIMIT 1`,
+    )
+    .get(address);
+  const pair = String(row?.pair_address || "").toLowerCase();
+  if (/^0x[a-f0-9]{40}$/.test(pair) || /^0x[a-f0-9]{64}$/.test(pair)) return pair;
+  const saved = getToken(address);
+  const fallback = String(saved?.pair_address || "").toLowerCase();
+  return /^0x[a-f0-9]{40}$/.test(fallback) || /^0x[a-f0-9]{64}$/.test(fallback) ? fallback : "";
+}
+
 export function setTokenLogo(address, url) {
   const logo = String(url || "").trim();
   if (!logo.startsWith("https://")) return;

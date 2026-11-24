@@ -1559,13 +1559,28 @@ function chartPlotted(rows) {
   return plotted;
 }
 
-function chartExtent(rows) {
-  const plotted = chartPlotted(rows);
-  if (!plotted.length) return null;
-  let minT = Math.min(...plotted.map((item) => item.row.time));
-  let maxT = Math.max(...plotted.map((item) => item.row.time));
-  let minY = Math.min(...plotted.map((item) => Number(item.row.mcap)));
-  let maxY = Math.max(...plotted.map((item) => Number(item.row.mcap)));
+function chartExtent(rows, candles = []) {
+  const times = [];
+  const caps = [];
+  for (const item of chartPlotted(rows)) {
+    times.push(item.row.time);
+    caps.push(Number(item.row.mcap));
+  }
+  for (const candle of candles) {
+    const time = Number(candle.time);
+    const mcap = Number(candle.mcap);
+    if (time > 0 && mcap > 0) {
+      times.push(time);
+      caps.push(mcap);
+      if (Number(candle.high) > 0) caps.push(Number(candle.high));
+      if (Number(candle.low) > 0) caps.push(Number(candle.low));
+    }
+  }
+  if (!times.length) return null;
+  let minT = Math.min(...times);
+  let maxT = Math.max(...times);
+  let minY = Math.min(...caps);
+  let maxY = Math.max(...caps);
   if (minT === maxT) {
     minT -= 60;
     maxT += 60;
@@ -1647,12 +1662,28 @@ function chartTimeLabel(unix, span) {
   return full.slice(5, 16);
 }
 
-function buyerChartSvg(rows, view) {
+function tokenChartPaths(candles, xOf, yOf) {
+  const points = (candles || []).filter((candle) => Number(candle.time) > 0 && Number(candle.mcap) > 0);
+  if (points.length < 2) return "";
+  const line = points
+    .map((point, index) => `${index ? "L" : "M"}${xOf(point.time).toFixed(2)},${yOf(point.mcap).toFixed(2)}`)
+    .join("");
+  const upper = points
+    .map((point, index) => `${index ? "L" : "M"}${xOf(point.time).toFixed(2)},${yOf(Number(point.high) > 0 ? point.high : point.mcap).toFixed(2)}`)
+    .join("");
+  const lower = [...points]
+    .reverse()
+    .map((point) => `L${xOf(point.time).toFixed(2)},${yOf(Number(point.low) > 0 ? point.low : point.mcap).toFixed(2)}`)
+    .join("");
+  return `<path d="${upper}${lower}Z" class="chart-area"/><path d="${line}" class="chart-line"/>`;
+}
+
+function buyerChartSvg(rows, view, candles = []) {
   const width = CHART.width;
   const height = CHART.height;
   const pad = CHART.pad;
   const plotted = chartPlotted(rows);
-  const extent = chartExtent(rows);
+  const extent = chartExtent(rows, candles);
   if (!extent) return `<p class="muted buyers-note">No real buyer trade has a time and market cap yet.</p>`;
   const domain = chartView(view, extent);
   let { minT, maxT, minY, maxY } = domain;
@@ -1713,7 +1744,7 @@ function buyerChartSvg(rows, view) {
     <text x="16" y="${(pad.t + height - pad.b) / 2}" text-anchor="middle" class="chart-axis" transform="rotate(-90 16 ${(pad.t + height - pad.b) / 2})">M. Cap</text>
     <line x1="${pad.l}" y1="${pad.t}" x2="${pad.l}" y2="${height - pad.b}" class="chart-axis-line"/>
     <line x1="${pad.l}" y1="${height - pad.b}" x2="${width - pad.r}" y2="${height - pad.b}" class="chart-axis-line"/>
-    <g clip-path="url(#chart-plot)">${marks}</g>
+    <g clip-path="url(#chart-plot)">${tokenChartPaths(candles, xOf, yOf)}${marks}</g>
   </svg>`;
 }
 
@@ -1724,7 +1755,7 @@ function onChartWheel(event) {
   const svg = chartRoot?.querySelector(".buyer-chart");
   const overPlot = event.target.closest?.(".chart-stage, .buyer-chart");
   if (!svg || !overPlot || !state.buyerChart?.rows?.length) return;
-  const extent = chartExtent(state.buyerChart.rows);
+  const extent = chartExtent(state.buyerChart.rows, state.buyerChart.candles || []);
   if (!extent) return;
   const pixels = wheelPixels(event);
   if (!pixels) return;
@@ -1773,6 +1804,7 @@ function paintBuyerChart() {
     error: chart.error || "",
     ready: chart.ready,
     rows: chart.rows || [],
+    candles: chart.candles || [],
     view: chart.view || null,
   });
   if (!root) {
@@ -1784,7 +1816,7 @@ function paintBuyerChart() {
   root.dataset.sig = signature;
   const token = (state.data?.tokens || []).find((item) => item.address === chart.address);
   const title = token?.symbol || chart.symbol || "Token";
-  const legend = BUYER_ANIMALS.map((animal) => `<span class="chart-key" style="color:${animal.color}">${animalMark(animal, 15)}<b>${esc(animal.label)}</b><span>${esc(animal.range)}</span></span>`).join("");
+  const legend = `<span class="chart-key chart-token-key"><i></i><b>Token</b><span>M. Cap</span></span>${BUYER_ANIMALS.map((animal) => `<span class="chart-key" style="color:${animal.color}">${animalMark(animal, 15)}<b>${esc(animal.label)}</b><span>${esc(animal.range)}</span></span>`).join("")}`;
   const note = chart.loading
     ? `<p class="muted buyers-note">Reading real buyer trades…</p>`
     : chart.error
@@ -1792,10 +1824,10 @@ function paintBuyerChart() {
       : !chart.ready
         ? `<p class="muted buyers-note">Some trades are still being counted. The chart shows the ones finished so far.</p>`
         : "";
-  const plot = chart.loading || chart.error ? "" : buyerChartSvg(chart.rows || [], chart.view || null);
+  const plot = chart.loading || chart.error ? "" : buyerChartSvg(chart.rows || [], chart.view || null, chart.candles || []);
   root.innerHTML = `<div class="chart-back"><section class="buyers-modal chart-modal" role="dialog" aria-modal="true" aria-label="Buyer chart">
     <div class="buyers-head">
-      <div><h3>Buyer chart · ${esc(title)}</h3><p class="muted">Each icon is one real buyer trade. A green circle is a buy and a red circle is a sell. Scroll up to zoom in and down to zoom out. The chart and the time axis zoom time. The market-cap axis zooms market cap.</p></div>
+      <div><h3>Buyer chart · ${esc(title)}</h3><p class="muted">The line is the token market cap. Each icon is a real buyer trade: a green circle is a buy and a red circle is a sell. Scroll up to zoom in and down to zoom out.</p></div>
       <button class="icon-close" data-act="close-chart" aria-label="Close">×</button>
     </div>
     <div class="chart-legend">${legend}</div>
@@ -1828,10 +1860,18 @@ async function loadBuyerChart(address) {
         maker: row.maker || "",
         tx: row.tx || "",
       })),
+      candles: (body.chart || [])
+        .map((point) => ({
+          time: Number(point.time) || 0,
+          mcap: Number(point.mcap) || 0,
+          high: Number(point.high) || Number(point.mcap) || 0,
+          low: Number(point.low) || Number(point.mcap) || 0,
+        }))
+        .filter((point) => point.time > 0 && point.mcap > 0),
     };
   } catch (error) {
     if (!state.buyerChart || state.buyerChart.address !== address) return;
-    state.buyerChart = { address, loading: false, ready: false, error: error.message, rows: [] };
+    state.buyerChart = { address, loading: false, ready: false, error: error.message, rows: [], candles: [] };
   }
   const root = document.getElementById("buyer-chart");
   if (root) root.dataset.sig = "";

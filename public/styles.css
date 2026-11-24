@@ -338,6 +338,9 @@ tr.clickable:hover td { background: rgba(255,255,255,0.03); }
 .chart-zoom-x, .chart-zoom-y { fill: transparent; }
 .chart-zoom-x { cursor: ew-resize; }
 .chart-zoom-y { cursor: ns-resize; }
+.chart-line { fill: none; stroke: #d5e4f7; stroke-width: 1.7; stroke-linejoin: round; stroke-linecap: round; pointer-events: none; }
+.chart-area { fill: rgba(213, 228, 247, 0.1); stroke: none; pointer-events: none; }
+.chart-token-key i { width: 18px; height: 3px; border-radius: 99px; background: #d5e4f7; display: inline-block; }
 .chart-point { cursor: pointer; }
 .chart-ring { fill: transparent; stroke-width: 2.4; }
 .chart-ring.buy { stroke: var(--green); }
