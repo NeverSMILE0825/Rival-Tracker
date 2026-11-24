@@ -1,4 +1,6 @@
 import {
+  getToken,
+  listCreationSwaps,
   listProfitPairs,
   missingSwapTargets,
   nextProfitToken,
@@ -17,6 +19,14 @@ import { nowSec, sleep } from "./util.js";
 const READ_RPCS = ["https://rpc.mevblocker.io", "https://rpc.flashbots.net", "https://eth.drpc.org"];
 const TRACE_RPC = "https://eth.drpc.org";
 const TRANSFER = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
+const V2_SWAP = "0xd78ad95fa46c994b6551d0da85fc275fe613ce37657fb8d5e3d130840159d822";
+const V2_MINT = "0x4c209b5fc8ad50758f13e2e1088ba56a560dff690a1c6fef26394f4c03821c4f";
+const V2_BURN = "0xdccd412f0b1252819cb1fd330b93224ca42612892bb3f4f789976e6d81936496";
+const V3_SWAP = "0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67";
+const V3_MINT = "0x7a53080ba414158be7ec69b987b5fb7d07dee101fe85488f0853ae16239d0bde";
+const V3_BURN = "0x0c396cd989a39f4459b5fa1aed6a9a8dcdbc45908acfd67e028cd568da98982c";
+const SWAP_TOPICS = new Set([V2_SWAP, V3_SWAP]);
+const LIQUIDITY_TOPICS = new Set([V2_MINT, V2_BURN, V3_MINT, V3_BURN]);
 const V4_POOL = "0x000000000004444c5dc75cb358380d2e3de08a90";
 const WETH = "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2";
 const ZERO = "0x0000000000000000000000000000000000000000";
@@ -88,16 +98,30 @@ function collect(frame, token, bag) {
   const value = asWei(frame.value);
   if (value > 0n && from && to) bag.eth.push({ from, to, value });
   for (const log of frame.logs || []) {
-    if (lower(log.topics?.[0]) !== TRANSFER) continue;
-    const contract = lower(log.address);
+    const topic = lower(log.topics?.[0]);
+    const address = lower(log.address);
+    if (LIQUIDITY_TOPICS.has(topic)) bag.liquidity.add(address);
+    if (SWAP_TOPICS.has(topic)) bag.swaps.add(address);
+    if (topic !== TRANSFER) continue;
     const src = topicAddress(log.topics?.[1]);
     const dst = topicAddress(log.topics?.[2]);
     const raw = asWei(log.data);
     if (raw <= 0n) continue;
-    if (contract === token) bag.token.push({ src, dst, raw });
-    if (contract === WETH) bag.weth.push({ from: src, to: dst, value: raw });
+    if (address === token) bag.token.push({ src, dst, raw });
+    if (address === WETH) bag.weth.push({ from: src, to: dst, value: raw });
   }
   for (const call of frame.calls || []) collect(call, token, bag);
+}
+
+function mintedOnly(moves, taker) {
+  let received = 0n;
+  let bought = 0n;
+  for (const move of moves) {
+    if (move.dst !== taker) continue;
+    received += move.raw;
+    if (move.src && move.src !== ZERO) bought += move.raw;
+  }
+  return received > 0n && bought === 0n;
 }
 
 function tokenNet(moves) {
@@ -157,18 +181,31 @@ function pickSide(buy, sell) {
 export function swapFromTrace(trace, tokenAddress, pairAddresses = []) {
   if (!trace) return { side: "", wei: 0n };
   const token = lower(tokenAddress);
-  const bag = { eth: [], token: [], weth: [] };
+  const bag = { eth: [], token: [], weth: [], liquidity: new Set(), swaps: new Set() };
   collect(trace, token, bag);
   if (!bag.token.length) return { side: "", wei: 0n };
+  const created = lower(trace.to);
+  if ((trace.type === "CREATE" || trace.type === "CREATE2") && created) {
+    bag.eth = bag.eth.filter((move) => move.to !== created);
+  }
+  const liquidityOnly = new Set([...bag.liquidity].filter((pool) => !bag.swaps.has(pool)));
+  if (liquidityOnly.size) {
+    const tradeMove = (move) => !liquidityOnly.has(move.to) && !liquidityOnly.has(move.from);
+    bag.eth = bag.eth.filter(tradeMove);
+    bag.weth = bag.weth.filter(tradeMove);
+  }
   const nets = tokenNet(bag.token);
   const pools = new Set([V4_POOL, ...pairAddresses.map(lower)].filter((address) => /^0x[a-f0-9]{40}$/.test(address)));
   pools.delete(token);
   pools.delete(WETH);
+  for (const pool of liquidityOnly) pools.delete(pool);
   const native = measure(bag.eth, nets, pools);
   const wrapped = measure(bag.weth, nets, pools);
   let nativeSide = pickSide(native.buy, native.sell);
   let wrappedSide = pickSide(wrapped.buy, wrapped.sell);
-  if (!nativeSide && !wrappedSide) {
+  const adding = liquidityOnly.size > 0 && bag.swaps.size === 0;
+  const creating = trace.type === "CREATE" || trace.type === "CREATE2";
+  if (!nativeSide && !wrappedSide && !adding && !(creating && mintedOnly(bag.token, lower(trace.from)))) {
     const taker = lower(trace.from);
     const nativeTaker = takerMeasure(bag.eth, nets, taker);
     const wrappedTaker = takerMeasure(bag.weth, nets, taker);
@@ -325,11 +362,36 @@ async function step() {
   await sleep(300);
 }
 
+async function repairCreationSwaps() {
+  const rows = listCreationSwaps();
+  const tokens = new Set();
+  for (const row of rows) {
+    try {
+      const trace = await traceSwap(row.tx_hash);
+      const result = swapFromTrace(trace, row.token_address, listProfitPairs(row.token_address));
+      saveSwapMeasure(row.token_address, row.tx_hash, result.side, result.wei.toString());
+      tokens.add(row.token_address);
+    } catch (error) {
+      if (limited(error)) throw error;
+      console.error("profit repair", row.tx_hash, error.message);
+    }
+  }
+  for (const address of tokens) {
+    const token = getToken(address);
+    if (token) writeTotals(token, Number(token.profit_block) || 0, Boolean(token.profit_checked_at));
+  }
+}
+
 export function startProfitWatch() {
   if (started) return;
   started = true;
   const loop = async () => {
     console.log("Token profit is calculated apart from launch detection");
+    try {
+      await repairCreationSwaps();
+    } catch (error) {
+      console.error("profit repair", error.message);
+    }
     while (true) {
       try {
         await step();

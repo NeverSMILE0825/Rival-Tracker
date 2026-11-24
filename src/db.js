@@ -922,6 +922,15 @@ export function swapTargetCounts(token) {
     .all(token);
 }
 
+export function listCreationSwaps() {
+  return db
+    .prepare(
+      `SELECT token_address, tx_hash FROM token_swaps
+       WHERE measured = 1 AND side IN ('buy', 'sell') AND IFNULL(tx_to, '') = ''`,
+    )
+    .all();
+}
+
 export function nextUnmeasuredSwap(token, team) {
   const excluded = team.length ? team : ["__none__"];
   const marks = excluded.map(() => "?").join(",");
