@@ -7,6 +7,8 @@ import {
   nextUnmeasuredSwap,
   noteSwapAttempt,
   profitTotals,
+  markSetupChecked,
+  nextSetupSwap,
   rememberSwapTxs,
   saveSwapMeasure,
   saveSwapTarget,
@@ -27,6 +29,10 @@ const V3_MINT = "0x7a53080ba414158be7ec69b987b5fb7d07dee101fe85488f0853ae16239d0
 const V3_BURN = "0x0c396cd989a39f4459b5fa1aed6a9a8dcdbc45908acfd67e028cd568da98982c";
 const SWAP_TOPICS = new Set([V2_SWAP, V3_SWAP]);
 const LIQUIDITY_TOPICS = new Set([V2_MINT, V2_BURN, V3_MINT, V3_BURN]);
+const ADD_TOPICS = new Set([V2_MINT, V3_MINT]);
+const V4_INIT = "0xdd466e674ea557f56295e2d0218a125ea4b4f0f6f3307b95f85e6110838d6438";
+const V4_MODIFY = "0xf208f4912782fd25c7f114ca3723a2d5dd6f3bcc3ac8db5af63baa85f711d5ec";
+const PAIR_CREATED = "0x0d3648bd0f6ba80134a33ba9275ac585d9d315f0ad8355cddefde31afa28d0e9";
 const V4_POOL = "0x000000000004444c5dc75cb358380d2e3de08a90";
 const WETH = "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2";
 const ZERO = "0x0000000000000000000000000000000000000000";
@@ -53,6 +59,19 @@ function topicAddress(topic) {
   const hex = String(topic || "");
   if (hex.length < 42) return "";
   return `0x${hex.slice(-40).toLowerCase()}`;
+}
+
+function signedWord(data, index) {
+  const word = String(data || "").replace(/^0x/, "").slice(index * 64, (index + 1) * 64);
+  if (word.length !== 64) return 0n;
+  const value = BigInt(`0x${word}`);
+  const sign = 1n << 255n;
+  return value >= sign ? value - (1n << 256n) : value;
+}
+
+function setupLog(topic, data) {
+  if (topic === V4_INIT || topic === PAIR_CREATED || ADD_TOPICS.has(topic)) return true;
+  return topic === V4_MODIFY && signedWord(data, 2) > 0n;
 }
 
 async function rpc(url, method, params, timeout = 12000) {
@@ -100,6 +119,7 @@ function collect(frame, token, bag) {
   for (const log of frame.logs || []) {
     const topic = lower(log.topics?.[0]);
     const address = lower(log.address);
+    if (setupLog(topic, log.data)) bag.setup = true;
     if (LIQUIDITY_TOPICS.has(topic)) bag.liquidity.add(address);
     if (SWAP_TOPICS.has(topic)) bag.swaps.add(address);
     if (topic !== TRANSFER) continue;
@@ -179,11 +199,12 @@ function pickSide(buy, sell) {
 }
 
 export function swapFromTrace(trace, tokenAddress, pairAddresses = []) {
-  if (!trace) return { side: "", wei: 0n };
+  if (!trace) return { side: "", wei: 0n, setup: false };
   const token = lower(tokenAddress);
-  const bag = { eth: [], token: [], weth: [], liquidity: new Set(), swaps: new Set() };
+  const bag = { eth: [], token: [], weth: [], liquidity: new Set(), swaps: new Set(), setup: false };
   collect(trace, token, bag);
-  if (!bag.token.length) return { side: "", wei: 0n };
+  if (bag.setup) return { side: "", wei: 0n, setup: true };
+  if (!bag.token.length) return { side: "", wei: 0n, setup: false };
   const created = lower(trace.to);
   if ((trace.type === "CREATE" || trace.type === "CREATE2") && created) {
     bag.eth = bag.eth.filter((move) => move.to !== created);
@@ -215,7 +236,7 @@ export function swapFromTrace(trace, tokenAddress, pairAddresses = []) {
   const choice = [nativeSide, wrappedSide]
     .filter(Boolean)
     .sort((a, b) => (a.wei > b.wei ? -1 : a.wei < b.wei ? 1 : 0))[0];
-  return choice || { side: "", wei: 0n };
+  return choice ? { ...choice, setup: false } : { side: "", wei: 0n, setup: false };
 }
 
 async function headBlock() {
@@ -332,6 +353,10 @@ function writeTotals(token, head, done) {
 }
 
 async function step() {
+  if (await repairOneSetup()) {
+    await sleep(200);
+    return;
+  }
   const token = nextProfitToken(nowSec());
   if (!token) {
     await sleep(5000);
@@ -360,6 +385,25 @@ async function step() {
   if (nextUnmeasuredSwap(token.address, team)) return;
   writeTotals(token, head, true);
   await sleep(300);
+}
+
+async function repairOneSetup() {
+  const row = nextSetupSwap();
+  if (!row) return false;
+  try {
+    const trace = await traceSwap(row.tx_hash);
+    const result = swapFromTrace(trace, row.token_address, listProfitPairs(row.token_address));
+    if (result.setup) {
+      saveSwapMeasure(row.token_address, row.tx_hash, "", "0");
+      const token = getToken(row.token_address);
+      if (token) writeTotals(token, Number(token.profit_block) || 0, Boolean(token.profit_checked_at));
+    } else markSetupChecked(row.token_address, row.tx_hash);
+  } catch (error) {
+    if (limited(error)) throw error;
+    markSetupChecked(row.token_address, row.tx_hash);
+    console.error("profit setup", row.tx_hash, error.message);
+  }
+  return true;
 }
 
 async function repairCreationSwaps() {

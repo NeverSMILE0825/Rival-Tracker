@@ -552,6 +552,11 @@ for (const [name, definition] of [
   }
 }
 
+const swapColumns = db.prepare("PRAGMA table_info(token_swaps)").all();
+if (!swapColumns.some((column) => column.name === "setup_checked")) {
+  db.exec("ALTER TABLE token_swaps ADD COLUMN setup_checked INTEGER NOT NULL DEFAULT 0");
+}
+
 const buyerTradeColumns = db.prepare("PRAGMA table_info(buyer_trades)").all();
 if (!buyerTradeColumns.some((column) => column.name === "amount_usd")) {
   db.exec("ALTER TABLE buyer_trades ADD COLUMN amount_usd REAL");
@@ -1031,9 +1036,24 @@ export function nextUnmeasuredSwap(token, team) {
 export function saveSwapMeasure(token, hash, side, wei) {
   db.prepare(
     `UPDATE token_swaps
-     SET side = ?, amount_wei = ?, measured = 1
+     SET side = ?, amount_wei = ?, measured = 1, setup_checked = 1
      WHERE token_address = ? AND tx_hash = ?`,
   ).run(side, wei, token, hash);
+}
+
+export function nextSetupSwap() {
+  return db
+    .prepare(
+      `SELECT token_address, tx_hash FROM token_swaps
+       WHERE measured = 1 AND side IN ('buy', 'sell') AND IFNULL(setup_checked, 0) = 0
+       ORDER BY block_number DESC
+       LIMIT 1`,
+    )
+    .get();
+}
+
+export function markSetupChecked(token, hash) {
+  db.prepare("UPDATE token_swaps SET setup_checked = 1 WHERE token_address = ? AND tx_hash = ?").run(token, hash);
 }
 
 export function noteSwapAttempt(token, hash) {
