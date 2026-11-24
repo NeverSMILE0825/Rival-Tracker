@@ -31,7 +31,7 @@ const state = {
 };
 
 const TITLES = {
-  overview: ["Overview", "Funded wallets that have not launched yet, and the tokens that already have."],
+  overview: ["Overview", "Waiting wallets, latest launches, and recent activity."],
   waiting: ["Waiting to launch", "Fresh wallets that received ETH from a rival and have not deployed a token."],
   tokens: ["Tokens", "Tokens deployed by those funded wallets, with pool, liquidity, and Dextools."],
   rivals: ["Rivals", "Add, rename, or remove the wallets you want to follow."],
@@ -433,44 +433,60 @@ function paintView() {
 
 function viewOverview() {
   const counts = state.data.counts;
-  const waiting = filteredWallets().filter((wallet) => wallet.status === "waiting").slice(0, 6);
-  const tokens = filteredTokens().slice(0, 6);
+  const waiting = state.data.deployers
+    .filter((wallet) => wallet.status === "waiting")
+    .sort((a, b) => Number(b.first_funded_at) - Number(a.first_funded_at))
+    .slice(0, 8);
+  const tokens = [...state.data.tokens].sort((a, b) => Number(launchedAt(b)) - Number(launchedAt(a))).slice(0, 8);
+  const events = state.data.events || [];
   return `
-    <section class="stats">
-      ${stat("Waiting", counts.waiting)}
-      ${stat("Live tokens", counts.live)}
-      ${stat("Rugged", counts.rugged)}
-      ${stat("Live liquidity", formatUsd(counts.liquidity))}
-      ${stat("Still checking", counts.queued)}
-    </section>
-    <div class="grid-2">
-      <section class="card">
-        <h3>Fresh wallets</h3>
-        ${waiting.length ? `<div class="list">${waiting.map(walletLine).join("")}</div>` : `<div class="empty"><h3>No wallets waiting</h3><p>Scan a rival. Funded wallets that have not deployed show up here.</p></div>`}
+    <div class="overview">
+      <section class="stats">
+        ${stat("Waiting", counts.waiting)}
+        ${stat("Live", counts.live)}
+        ${stat("Rugged", counts.rugged)}
+        ${stat("Liquidity", formatUsd(counts.liquidity))}
+        ${stat("Checking", counts.queued)}
       </section>
-      <section class="card">
-        <h3>Latest tokens</h3>
-        ${tokens.length ? `<div class="list">${tokens.map(tokenLine).join("")}</div>` : `<div class="empty"><h3>No tokens yet</h3><p>Launches appear after a funded wallet deploys a contract.</p></div>`}
-      </section>
-    </div>
-    <section class="card" style="margin-top:12px">
-      <div class="panel-head">
-        <h3>Activity</h3>
-        <button class="btn" data-act="read">Mark read</button>
+      <div class="overview-board">
+        <section class="card">
+          <div class="panel-head">
+            <h3>Fresh wallets</h3>
+            <button class="panel-link" type="button" data-act="route" data-route="waiting">Open</button>
+          </div>
+          <div class="ov-scroll">
+            ${waiting.length ? waiting.map(walletLine).join("") : `<p class="muted">No wallets are waiting.</p>`}
+          </div>
+        </section>
+        <section class="card">
+          <div class="panel-head">
+            <h3>Latest tokens</h3>
+            <button class="panel-link" type="button" data-act="route" data-route="tokens">Open</button>
+          </div>
+          <div class="ov-scroll">
+            ${tokens.length ? tokens.map(tokenLine).join("") : `<p class="muted">No tokens yet.</p>`}
+          </div>
+        </section>
+        <section class="card">
+          <div class="panel-head">
+            <h3>Activity${counts.unseen ? ` <span class="pill live">${esc(counts.unseen)}</span>` : ""}</h3>
+            <button class="panel-link" type="button" data-act="read">Mark read</button>
+          </div>
+          <div class="ov-scroll">
+            ${
+              events.length
+                ? events
+                    .map(
+                      (event) =>
+                        `<div class="ov-event ${event.seen ? "" : "unseen"}"><b>${esc(event.kind)}</b><span>${esc(event.message)}</span><small>${esc(formatAge(event.created_at))}</small></div>`,
+                    )
+                    .join("")
+                : `<p class="muted">Scans write a line here when a wallet is funded or a token launches.</p>`
+            }
+          </div>
+        </section>
       </div>
-      <div class="activity">
-        ${
-          state.data.events.length
-            ? state.data.events
-                .map(
-                  (event) =>
-                    `<div class="event ${event.seen ? "" : "unseen"}"><div><b>${esc(event.kind)}</b> ${esc(event.message)}</div><small class="muted">${esc(formatAge(event.created_at))}</small></div>`,
-                )
-                .join("")
-            : `<p class="muted">Scans write a line here when a wallet is funded or a token launches.</p>`
-        }
-      </div>
-    </section>`;
+    </div>`;
 }
 
 function stat(label, value) {
@@ -479,19 +495,19 @@ function stat(label, value) {
 
 function walletLine(wallet) {
   const funding = wallet.fundings[0];
-  const age = formatAge(wallet.first_funded_at);
-  return `<button class="rowish" data-act="drawer-wallet" data-address="${esc(wallet.address)}" style="width:100%;border:0;text-align:left">
+  const fresh = Number(wallet.first_funded_at) > Date.now() / 1000 - 3600;
+  return `<button class="ov-row" data-act="drawer-wallet" data-address="${esc(wallet.address)}">
     <i class="swatch" style="background:${esc(funding?.color || "#d6f25c")}"></i>
-    <span><b>${esc(shortAddr(wallet.address))}</b><br><small>${esc(funding?.label || "")} · ${esc(formatEth(funding?.value_wei))} ETH</small></span>
-    <span class="${Number(wallet.first_funded_at) > Date.now() / 1000 - 3600 ? "hot" : ""}">${esc(age)}</span>
+    <span class="ov-main"><b>${esc(shortAddr(wallet.address))}</b><span>${esc(funding?.label || "Rival")} · ${esc(formatEth(funding?.value_wei))} ETH</span></span>
+    <span class="ov-time ${fresh ? "hot" : ""}">${esc(formatAge(wallet.first_funded_at))}</span>
   </button>`;
 }
 
 function tokenLine(token) {
   const funding = token.fundings[0];
-  return `<button class="rowish" data-act="drawer-token" data-address="${esc(token.address)}" style="width:100%;border:0;text-align:left">
+  return `<button class="ov-row" data-act="drawer-token" data-address="${esc(token.address)}">
     <i class="swatch" style="background:${esc(funding?.color || "#d6f25c")}"></i>
-    <span><b>${esc(token.symbol)}</b> ${esc(token.name)}<br><small>${esc(rivalLabel(token.fundings))} · ${esc(formatKst(launchedAt(token)))} ${zoneLabel()}</small></span>
+    <span class="ov-main"><b>${esc(token.symbol || "—")}</b><span>${esc(rivalLabel(token.fundings))} · ${esc(formatKst(launchedAt(token)))}</span></span>
     <span class="pill ${esc(token.status)}">${esc(token.status)}</span>
   </button>`;
 }
