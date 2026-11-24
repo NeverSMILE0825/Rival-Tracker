@@ -216,6 +216,7 @@ function paint() {
     if (!document.documentElement.dataset.bound) {
       document.body.addEventListener("click", onClick);
       document.body.addEventListener("mouseover", onChartHover);
+      document.body.addEventListener("wheel", onChartWheel, { passive: false, capture: true });
       document.body.addEventListener("submit", onSubmit);
       document.body.addEventListener("input", onInput);
       document.body.addEventListener("change", onKeyFile);
@@ -1547,22 +1548,24 @@ function chartTipHtml(row) {
     </dl>`;
 }
 
-function buyerChartSvg(rows) {
-  const width = 1000;
-  const height = 520;
-  const pad = { l: 78, r: 46, t: 16, b: 46 };
+const CHART = { width: 1000, height: 520, pad: { l: 78, r: 46, t: 16, b: 46 } };
+
+function chartPlotted(rows) {
   const plotted = [];
   rows.forEach((row, index) => {
     if (!row.time || !(Number(row.mcap) > 0)) return;
     plotted.push({ row, index });
   });
-  if (!plotted.length) return `<p class="muted buyers-note">No real buyer trade has a time and market cap yet.</p>`;
-  const times = plotted.map((item) => item.row.time);
-  const caps = plotted.map((item) => Number(item.row.mcap));
-  let minT = Math.min(...times);
-  let maxT = Math.max(...times);
-  let minY = Math.min(...caps);
-  let maxY = Math.max(...caps);
+  return plotted;
+}
+
+function chartExtent(rows) {
+  const plotted = chartPlotted(rows);
+  if (!plotted.length) return null;
+  let minT = Math.min(...plotted.map((item) => item.row.time));
+  let maxT = Math.max(...plotted.map((item) => item.row.time));
+  let minY = Math.min(...plotted.map((item) => Number(item.row.mcap)));
+  let maxY = Math.max(...plotted.map((item) => Number(item.row.mcap)));
   if (minT === maxT) {
     minT -= 60;
     maxT += 60;
@@ -1570,21 +1573,104 @@ function buyerChartSvg(rows) {
   const ySpan = maxY - minY || maxY || 1;
   minY = Math.max(0, minY - ySpan * 0.12);
   maxY += ySpan * 0.12;
+  return { minT, maxT, minY, maxY };
+}
+
+function chartView(view, extent) {
+  if (!view) return extent;
+  return {
+    minT: Math.min(Math.max(view.minT, extent.minT), extent.maxT),
+    maxT: Math.max(Math.min(view.maxT, extent.maxT), extent.minT),
+    minY: Math.min(Math.max(view.minY, extent.minY), extent.maxY),
+    maxY: Math.max(Math.min(view.maxY, extent.maxY), extent.minY),
+  };
+}
+
+function clampSpan(min, max, fullMin, fullMax, minSpan) {
+  const full = fullMax - fullMin;
+  const span = Math.min(Math.max(max - min, Math.min(minSpan, full)), full);
+  let lo = (min + max) / 2 - span / 2;
+  let hi = lo + span;
+  if (lo < fullMin) {
+    hi += fullMin - lo;
+    lo = fullMin;
+  }
+  if (hi > fullMax) {
+    lo -= hi - fullMax;
+    hi = fullMax;
+  }
+  return [Math.max(fullMin, lo), Math.min(fullMax, hi)];
+}
+
+function sameRange(view, extent) {
+  const spanT = extent.maxT - extent.minT || 1;
+  const spanY = extent.maxY - extent.minY || 1;
+  return Math.abs(view.minT - extent.minT) < spanT * 0.004
+    && Math.abs(view.maxT - extent.maxT) < spanT * 0.004
+    && Math.abs(view.minY - extent.minY) < spanY * 0.004
+    && Math.abs(view.maxY - extent.maxY) < spanY * 0.004;
+}
+
+function svgPoint(event, svg) {
+  const rect = svg.getBoundingClientRect();
+  return {
+    x: ((event.clientX - rect.left) / rect.width) * CHART.width,
+    y: ((event.clientY - rect.top) / rect.height) * CHART.height,
+  };
+}
+
+function wheelPixels(event) {
+  if (event.deltaMode === 1) return event.deltaY * 16;
+  if (event.deltaMode === 2) return event.deltaY * CHART.height;
+  return event.deltaY;
+}
+
+function chartUsd(value, span) {
+  if (span >= 1000) return formatUsd(value);
+  const digits = span < 20 ? 2 : span < 200 ? 1 : 0;
+  return `$${Number(value).toLocaleString("en-US", { maximumFractionDigits: digits, minimumFractionDigits: digits })}`;
+}
+
+function chartTimeLabel(unix, span) {
+  const full = formatExact(unix);
+  if (span <= 6 * 3600) return full.slice(5, 19);
+  return full.slice(5, 16);
+}
+
+function buyerChartSvg(rows, view) {
+  const width = CHART.width;
+  const height = CHART.height;
+  const pad = CHART.pad;
+  const plotted = chartPlotted(rows);
+  const extent = chartExtent(rows);
+  if (!extent) return `<p class="muted buyers-note">No real buyer trade has a time and market cap yet.</p>`;
+  const domain = chartView(view, extent);
+  let { minT, maxT, minY, maxY } = domain;
+  if (!(maxT > minT)) {
+    minT = extent.minT;
+    maxT = extent.maxT;
+  }
+  if (!(maxY > minY)) {
+    minY = extent.minY;
+    maxY = extent.maxY;
+  }
   const xOf = (time) => pad.l + ((time - minT) / (maxT - minT)) * (width - pad.l - pad.r);
   const yOf = (mcap) => pad.t + (1 - (mcap - minY) / (maxY - minY)) * (height - pad.t - pad.b);
   const yTicks = [0, 1, 2, 3, 4].map((step) => minY + ((maxY - minY) * step) / 4);
   const xTicks = [0, 1, 2, 3].map((step) => minT + ((maxT - minT) * step) / 3);
+  const ySpan = maxY - minY;
+  const tSpan = maxT - minT;
   const grid = yTicks
     .map((tick) => {
       const y = yOf(tick);
-      return `<line x1="${pad.l}" y1="${y}" x2="${width - pad.r}" y2="${y}" class="chart-grid"/><text x="${pad.l - 8}" y="${y + 4}" text-anchor="end" class="chart-label">${esc(formatUsd(tick))}</text>`;
+      return `<line x1="${pad.l}" y1="${y}" x2="${width - pad.r}" y2="${y}" class="chart-grid"/><text x="${pad.l - 8}" y="${y + 4}" text-anchor="end" class="chart-label">${esc(chartUsd(tick, ySpan))}</text>`;
     })
     .join("");
   const xLabels = xTicks
     .map((tick, index) => {
       const anchor = index === 0 ? "start" : index === xTicks.length - 1 ? "end" : "middle";
       const x = index === 0 ? pad.l : index === xTicks.length - 1 ? width - pad.r : xOf(tick);
-      return `<text x="${x}" y="${height - 16}" text-anchor="${anchor}" class="chart-label">${esc(formatExact(tick).slice(5, 16))}</text>`;
+      return `<text x="${x}" y="${height - 16}" text-anchor="${anchor}" class="chart-label">${esc(chartTimeLabel(tick, tSpan))}</text>`;
     })
     .join("");
   const symbols = BUYER_ANIMALS.map((animal) => `<symbol id="buyer-${animal.id}" viewBox="0 0 ${animal.w} ${animal.h}"><path fill="currentColor" d="${animal.path}"/></symbol>`).join("");
@@ -1605,16 +1691,50 @@ function buyerChartSvg(rows) {
       </g>`;
     })
     .join("");
+  const plotW = width - pad.l - pad.r;
+  const plotH = height - pad.t - pad.b;
   return `<svg class="buyer-chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="Real buyer trades by time and market cap">
-    <defs>${symbols}</defs>
+    <defs>${symbols}<clipPath id="chart-plot"><rect x="${pad.l}" y="${pad.t}" width="${plotW}" height="${plotH}"/></clipPath></defs>
+    <rect class="chart-zoom-y" x="0" y="0" width="${pad.l - 8}" height="${height}"/>
+    <rect class="chart-zoom-x" x="${pad.l - 8}" y="0" width="${width - pad.l + 8}" height="${height}"/>
     ${grid}
     ${xLabels}
     <text x="${(pad.l + width - pad.r) / 2}" y="${height - 2}" text-anchor="middle" class="chart-axis">Time (${esc(zoneLabel())})</text>
     <text x="16" y="${(pad.t + height - pad.b) / 2}" text-anchor="middle" class="chart-axis" transform="rotate(-90 16 ${(pad.t + height - pad.b) / 2})">M. Cap</text>
     <line x1="${pad.l}" y1="${pad.t}" x2="${pad.l}" y2="${height - pad.b}" class="chart-axis-line"/>
     <line x1="${pad.l}" y1="${height - pad.b}" x2="${width - pad.r}" y2="${height - pad.b}" class="chart-axis-line"/>
-    ${marks}
+    <g clip-path="url(#chart-plot)">${marks}</g>
   </svg>`;
+}
+
+function onChartWheel(event) {
+  const svg = event.target.closest?.(".buyer-chart");
+  if (!svg || !state.buyerChart?.rows?.length) return;
+  const extent = chartExtent(state.buyerChart.rows);
+  if (!extent) return;
+  event.preventDefault();
+  const current = chartView(state.buyerChart.view, extent);
+  const point = svgPoint(event, svg);
+  const factor = Math.exp(Math.max(-1, Math.min(1, wheelPixels(event) / 80)) * 0.55);
+  const next = { ...current };
+  const onIcon = Boolean(event.target.closest?.(".chart-point"));
+  if (!onIcon && point.x < CHART.pad.l - 8) {
+    const span = current.maxY - current.minY || 1;
+    const ratio = Math.min(1, Math.max(0, (point.y - CHART.pad.t) / (CHART.height - CHART.pad.t - CHART.pad.b)));
+    const anchor = current.maxY - ratio * span;
+    const minSpan = Math.min(extent.maxY - extent.minY, Math.max((extent.maxY - extent.minY) * 0.02, 1));
+    [next.minY, next.maxY] = clampSpan(anchor - (anchor - current.minY) * factor, anchor + (current.maxY - anchor) * factor, extent.minY, extent.maxY, minSpan);
+  } else {
+    const span = current.maxT - current.minT || 1;
+    const ratio = Math.min(1, Math.max(0, (point.x - CHART.pad.l) / (CHART.width - CHART.pad.l - CHART.pad.r)));
+    const anchor = current.minT + ratio * span;
+    const minSpan = Math.min(extent.maxT - extent.minT, 45);
+    [next.minT, next.maxT] = clampSpan(anchor - (anchor - current.minT) * factor, anchor + (current.maxT - anchor) * factor, extent.minT, extent.maxT, minSpan);
+  }
+  state.buyerChart.view = sameRange(next, extent) ? null : next;
+  const tip = document.querySelector("#buyer-chart .chart-tip");
+  if (tip) tip.hidden = true;
+  paintBuyerChart();
 }
 
 function paintBuyerChart() {
@@ -1630,6 +1750,7 @@ function paintBuyerChart() {
     error: chart.error || "",
     ready: chart.ready,
     rows: chart.rows || [],
+    view: chart.view || null,
   });
   if (!root) {
     root = document.createElement("div");
@@ -1648,10 +1769,10 @@ function paintBuyerChart() {
       : !chart.ready
         ? `<p class="muted buyers-note">Some trades are still being counted. The chart shows the ones finished so far.</p>`
         : "";
-  const plot = chart.loading || chart.error ? "" : buyerChartSvg(chart.rows || []);
+  const plot = chart.loading || chart.error ? "" : buyerChartSvg(chart.rows || [], chart.view || null);
   root.innerHTML = `<div class="chart-back"><section class="buyers-modal chart-modal" role="dialog" aria-modal="true" aria-label="Buyer chart">
     <div class="buyers-head">
-      <div><h3>Buyer chart · ${esc(title)}</h3><p class="muted">Each icon is one real buyer trade. A green circle is a buy and a red circle is a sell.</p></div>
+      <div><h3>Buyer chart · ${esc(title)}</h3><p class="muted">Each icon is one real buyer trade. A green circle is a buy and a red circle is a sell. Scroll up to zoom in and down to zoom out. The chart and the time axis zoom time. The market-cap axis zooms market cap.</p></div>
       <button class="icon-close" data-act="close-chart" aria-label="Close">×</button>
     </div>
     <div class="chart-legend">${legend}</div>

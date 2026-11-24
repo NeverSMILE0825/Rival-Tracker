@@ -334,6 +334,10 @@ tr.clickable:hover td { background: rgba(255,255,255,0.03); }
 .chart-axis-line { stroke: rgba(232,236,244,0.28); stroke-width: 1; }
 .chart-label, .chart-axis { fill: var(--muted); font-size: 12px; font-family: inherit; }
 .chart-axis { font-size: 11px; letter-spacing: 0.06em; }
+.chart-grid, .chart-axis-line, .chart-label, .chart-axis { pointer-events: none; }
+.chart-zoom-x, .chart-zoom-y { fill: transparent; }
+.chart-zoom-x { cursor: ew-resize; }
+.chart-zoom-y { cursor: ns-resize; }
 .chart-point { cursor: pointer; }
 .chart-ring { fill: transparent; stroke-width: 2.4; }
 .chart-ring.buy { stroke: var(--green); }
