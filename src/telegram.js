@@ -12,7 +12,7 @@ import {
 } from "./db.js";
 import { lookupLaunchMarket } from "./market.js";
 import { renderAlertCard } from "./card.js";
-import { formatKst, nowSec, sleep } from "./util.js";
+import { formatKst, formatSwapAmount, nowSec, sleep } from "./util.js";
 
 const CLOCK_SKEW_SEC = 120;
 
@@ -224,7 +224,8 @@ export async function sendBuyerTest(override = {}) {
       tokenName: "Token name",
       buyerLabel: "Wallet label",
       marketCap: 120000,
-      amount: 2500000,
+      amountWei: "4358370533764617",
+      amountUsd: 7.45,
       timestamp: when,
       sample: true,
     },
@@ -254,7 +255,7 @@ function buyerMessage(trade, zone) {
   const lines = [
     trade.sample ? "ℹ️ <b>SAMPLE ALERT</b>" : "",
     `${side === "BUY" ? "🟢" : "🔴"} <b>${side}</b> · $${bold(symbol)}${name ? ` — ${esc(name)}` : ""}`,
-    `💰 MCap ${money(trade.marketCap)} · 📦 Amount ${esc(amountText(trade.amount))}`,
+    `💰 MCap ${money(trade.marketCap)} · 📦 ${esc(trade.amountLabel || formatSwapAmount(trade.amountWei, trade.amountUsd))}`,
     when ? `🕐 ${esc(formatKst(when, zone))} ${zoneLabel}` : "",
     lag ? `⚡️ Detected in ${esc(lag)}` : "",
     `👤 ${esc(who)}`,
@@ -299,17 +300,6 @@ function buyerDestinationChats(settings, extra = "") {
   if (extra) ids.add(String(extra));
   for (const chat of listBuyerChats()) ids.add(String(chat.chat_id));
   return [...ids];
-}
-
-function amountText(value) {
-  const number = Number(value);
-  if (!Number.isFinite(number) || number <= 0) return "—";
-  if (number >= 1e9) return `${trimNumber(number / 1e9)}B`;
-  if (number >= 1e6) return `${trimNumber(number / 1e6)}M`;
-  if (number >= 1e3) return `${trimNumber(number / 1e3)}K`;
-  if (number >= 1) return number.toLocaleString(undefined, { maximumFractionDigits: 2 });
-  if (number >= 0.0001) return number.toFixed(4);
-  return number.toPrecision(2);
 }
 
 export function startTelegramInbox() {

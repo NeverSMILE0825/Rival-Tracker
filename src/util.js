@@ -75,6 +75,21 @@ export function formatEth(wei) {
   return frac ? `${whole}.${frac}` : String(whole);
 }
 
+export function formatSwapAmount(wei, usd) {
+  let value;
+  try {
+    value = BigInt(wei || "0");
+  } catch {
+    return "—";
+  }
+  if (value <= 0n) return "—";
+  const units = value / 10n ** 14n;
+  const eth = units === 0n ? "<0.0001" : formatEth(value);
+  const price = Number(usd);
+  const usdText = Number.isFinite(price) && price > 0 ? ` ($${price.toFixed(2)})` : "";
+  return `${eth} ETH${usdText}`;
+}
+
 export function formatKst(unixSeconds, offsetHours = 9) {
   if (!unixSeconds) return "";
   const date = new Date((Number(unixSeconds) + timezoneOffsetHours(offsetHours) * 3600) * 1000);

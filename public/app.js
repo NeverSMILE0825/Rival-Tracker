@@ -879,6 +879,39 @@ function filteredTokens() {
     });
 }
 
+function swapAmountLabel(trade) {
+  if (!trade.amount_wei) return formatAmount(trade.amount);
+  let value;
+  try {
+    value = BigInt(trade.amount_wei);
+  } catch {
+    return "—";
+  }
+  if (value <= 0n) return "—";
+  const units = value / 10n ** 14n;
+  const whole = value / 10n ** 18n;
+  const frac = (value % 10n ** 18n).toString().padStart(18, "0").slice(0, 4).replace(/0+$/, "");
+  const eth = units === 0n ? "<0.0001" : frac ? `${whole}.${frac}` : String(whole);
+  const usd = Number(trade.amount_usd);
+  const usdText = Number.isFinite(usd) && usd > 0 ? ` ($${usd.toFixed(2)})` : "";
+  return `${eth} ETH${usdText}`;
+}
+
+function exactSwapTitle(trade) {
+  if (!trade.amount_wei) return String(trade.amount ?? "");
+  let value;
+  try {
+    value = BigInt(trade.amount_wei);
+  } catch {
+    return "";
+  }
+  const whole = value / 10n ** 18n;
+  const frac = (value % 10n ** 18n).toString().padStart(18, "0").replace(/0+$/, "");
+  const eth = frac ? `${whole}.${frac}` : String(whole);
+  const usd = Number(trade.amount_usd);
+  return Number.isFinite(usd) && usd > 0 ? `${eth} ETH ($${usd.toFixed(2)})` : `${eth} ETH`;
+}
+
 function formatAmount(value) {
   const number = Number(value);
   if (!Number.isFinite(number) || number <= 0) return "—";
@@ -973,7 +1006,7 @@ function buyerTradeRow(trade) {
     <td>${esc(formatKst(trade.timestamp))}</td>
     <td><span class="pill ${trade.side === "buy" ? "live" : "rugged"}">${esc(trade.side)}</span></td>
     <td class="num">${esc(formatUsd(trade.market_cap))}</td>
-    <td class="num" title="${esc(trade.amount)}">${esc(formatAmount(trade.amount))}</td>
+    <td class="num" title="${esc(exactSwapTitle(trade))}">${esc(swapAmountLabel(trade))}</td>
     <td><b>${esc(token)}</b>${name}</td>
     <td>${esc(trade.buyer_label || shortAddr(trade.buyer_address))}</td>
     <td class="links"><a class="link-pill" href="https://etherscan.io/tx/${esc(trade.tx_hash)}" target="_blank" rel="noreferrer">Etherscan</a></td>

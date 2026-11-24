@@ -135,6 +135,8 @@ db.exec(`
     timestamp INTEGER NOT NULL,
     side TEXT NOT NULL,
     amount REAL,
+    amount_usd REAL,
+    amount_wei TEXT,
     market_cap REAL,
     UNIQUE(buyer_id, token_address, tx_hash)
   );
@@ -308,8 +310,8 @@ export function saveBuyerTrades(rows) {
   if (!rows.length) return [];
   const insert = db.prepare(
     `INSERT OR IGNORE INTO buyer_trades(
-       buyer_id, token_address, tx_hash, block_number, timestamp, side, amount, market_cap
-     ) VALUES(?, ?, ?, ?, ?, ?, ?, ?)`,
+       buyer_id, token_address, tx_hash, block_number, timestamp, side, amount, amount_usd, amount_wei, market_cap
+     ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   const saved = [];
   db.exec("BEGIN");
@@ -323,6 +325,8 @@ export function saveBuyerTrades(rows) {
         row.timestamp,
         row.side,
         row.amount,
+        row.amountUsd,
+        row.amountWei,
         row.marketCap,
       );
       if (Number(result.changes) > 0) saved.push(row);
@@ -338,7 +342,7 @@ export function saveBuyerTrades(rows) {
 export function listBuyerTrades(limit = 1000) {
   return db
     .prepare(
-      `SELECT t.id, t.buyer_id, t.token_address, t.tx_hash, t.block_number, t.timestamp, t.side, t.amount, t.market_cap,
+      `SELECT t.id, t.buyer_id, t.token_address, t.tx_hash, t.block_number, t.timestamp, t.side, t.amount, t.amount_usd, t.amount_wei, t.market_cap,
               b.address AS buyer_address, b.label AS buyer_label,
               k.symbol AS token_symbol, k.name AS token_name
        FROM buyer_trades t
@@ -449,6 +453,14 @@ if (!tokenColumns.some((column) => column.name === "ath_market_cap")) {
 }
 if (!tokenColumns.some((column) => column.name === "ath_checked_at")) {
   db.exec("ALTER TABLE tokens ADD COLUMN ath_checked_at INTEGER");
+}
+
+const buyerTradeColumns = db.prepare("PRAGMA table_info(buyer_trades)").all();
+if (!buyerTradeColumns.some((column) => column.name === "amount_usd")) {
+  db.exec("ALTER TABLE buyer_trades ADD COLUMN amount_usd REAL");
+}
+if (!buyerTradeColumns.some((column) => column.name === "amount_wei")) {
+  db.exec("ALTER TABLE buyer_trades ADD COLUMN amount_wei TEXT");
 }
 
 const pairColumns = db.prepare("PRAGMA table_info(token_pairs)").all();
