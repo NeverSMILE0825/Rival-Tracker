@@ -316,6 +316,22 @@ tr.clickable:hover td { background: rgba(255,255,255,0.03); }
 .colors button { width: 26px; height: 26px; border-radius: 99px; border: 2px solid transparent; }
 .colors button.on { border-color: white; }
 .modal .actions { margin-top: 8px; }
+.modal.manage {
+  width: min(880px, 100%); max-height: min(740px, calc(100vh - 36px));
+  display: flex; flex-direction: column; padding: 0; overflow: hidden;
+}
+.manage-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 18px 20px 0; }
+.manage-head h3 { margin: 0; }
+.manage-head p { margin: 4px 0 0; }
+.manage-form { display: grid; grid-template-columns: minmax(140px, 0.7fr) minmax(220px, 1.3fr) auto; gap: 10px; align-items: end; padding: 14px 20px 0; }
+.manage-form .field { margin: 0; }
+.manage-form .actions { margin: 0; display: flex; gap: 6px; }
+.modal.manage .err { margin: 8px 20px 0; }
+.manage-table { overflow: auto; margin-top: 14px; border-top: 1px solid var(--line); }
+.manage-table tr.on td { background: rgba(214, 242, 92, 0.08); }
+.manage-table .addr { font-family: Consolas, "Cascadia Mono", monospace; font-size: 12px; }
+.manage-table .manage-confirm { white-space: normal; }
+.manage-table .manage-confirm span { display: block; margin-bottom: 6px; color: var(--muted); }
 .buyers-back { position: fixed; inset: 0; background: rgba(0,0,0,0.62); display: grid; place-items: center; z-index: 40; padding: 18px; }
 .buyers-modal {
   width: min(1180px, 100%); height: min(760px, calc(100vh - 36px)); max-height: calc(100vh - 36px);
@@ -416,4 +432,5 @@ body.chart-panning, body.chart-panning * { cursor: grabbing !important; }
   .table-scroll { max-height: calc(100vh - 360px); }
   .buyers-modal .table-scroll { max-height: none; }
   .metrics { grid-template-columns: 1fr 1fr; }
+  .manage-form { grid-template-columns: 1fr; }
 }

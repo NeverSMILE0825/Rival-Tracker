@@ -1028,7 +1028,7 @@ function viewBuyers() {
     .join("");
   return `
     <div class="toolbar">
-      <button class="btn primary" data-act="add-buyer">Add buyer</button>
+      <button class="btn primary" data-act="manage-buyers">Manage Buyers</button>
       <select class="search" data-act="buyer-filter" style="width:180px">${options}</select>
       <input class="search" data-act="query" placeholder="Search token, buyer, transaction" value="${esc(state.query)}" />
     </div>
@@ -1058,10 +1058,6 @@ function buyerCard(buyer) {
     <div>
       <div class="name">${esc(buyerName(buyer))}</div>
       <div class="addr">${esc(buyer.address)} <button class="icon-btn" data-act="copy" data-value="${esc(buyer.address)}">copy</button></div>
-    </div>
-    <div class="mini-actions">
-      <button class="btn" data-act="edit-buyer" data-id="${buyer.id}">Edit</button>
-      <button class="btn danger" data-act="remove-buyer" data-id="${buyer.id}">Delete</button>
     </div>
   </article>`;
 }
@@ -1454,10 +1450,103 @@ function viewSettings() {
   </form>`;
 }
 
+function manageBuyerTable(modal) {
+  const buyers = state.data?.buyers || [];
+  if (!buyers.length) return `<tr><td colspan="3" class="muted">No buyers yet.</td></tr>`;
+  return buyers.map((buyer) => {
+    const name = buyerName(buyer);
+    if (modal.confirmId === buyer.id) {
+      return `<tr>
+        <td>${esc(name)}</td>
+        <td class="addr">${esc(buyer.address)}</td>
+        <td class="manage-confirm">
+          <span>Delete ${esc(name)}? Saved trades for this wallet are removed.</span>
+          <button type="button" class="btn danger" data-act="buyer-delete-yes" data-id="${buyer.id}">Delete</button>
+          <button type="button" class="btn" data-act="buyer-delete-no">Cancel</button>
+        </td>
+      </tr>`;
+    }
+    return `<tr class="${modal.editing === buyer.id ? "on" : ""}">
+      <td>${esc(name)}</td>
+      <td class="addr">${esc(buyer.address)}</td>
+      <td class="mini-actions">
+        <button type="button" class="btn" data-act="edit-buyer" data-id="${buyer.id}">Edit</button>
+        <button type="button" class="btn danger" data-act="remove-buyer" data-id="${buyer.id}">Delete</button>
+      </td>
+    </tr>`;
+  }).join("");
+}
+
+function captureBuyerDraft() {
+  const form = document.getElementById("buyer-manage");
+  if (!form || state.modal?.mode !== "manage-buyers") return;
+  state.modal.draft = { label: form.label.value, address: form.address.value };
+}
+
+function paintManageBuyers(root) {
+  const modal = state.modal;
+  const signature = JSON.stringify({
+    buyers: (state.data?.buyers || []).map((buyer) => [buyer.id, buyer.label, buyer.address]),
+    editing: modal.editing || 0,
+    confirmId: modal.confirmId || 0,
+    error: modal.error || "",
+    draft: modal.draft || { label: "", address: "" },
+  });
+  if (root.dataset.mode === "manage-buyers" && root.dataset.sig === signature) return;
+  const field = document.activeElement;
+  const typing = field && root.contains(field) && field.matches("input");
+  const typingName = typing ? field.name || "" : "";
+  const caret = typing && typeof field.selectionStart === "number" ? field.selectionStart : null;
+  const caretEnd = typing && typeof field.selectionEnd === "number" ? field.selectionEnd : null;
+  const draft = modal.draft || { label: "", address: "" };
+  root.dataset.mode = "manage-buyers";
+  root.dataset.id = "";
+  root.dataset.sig = signature;
+  root.innerHTML = `<div class="modal-back"><section class="modal manage" role="dialog" aria-modal="true" aria-label="Manage Buyers">
+    <div class="manage-head">
+      <div><h3>Manage Buyers</h3><p class="muted">Add, edit, or delete a watched wallet.</p></div>
+      <button class="icon-close" type="button" data-act="close" aria-label="Close">×</button>
+    </div>
+    <form id="buyer-manage" class="manage-form">
+      <div class="field"><label>Label <span class="muted">(optional)</span></label><input name="label" value="${esc(draft.label || "")}" /></div>
+      <div class="field"><label>Address</label><input name="address" value="${esc(draft.address || "")}" required spellcheck="false" /></div>
+      <div class="actions">
+        ${modal.editing ? `<button class="btn" type="button" data-act="buyer-cancel">Cancel</button>` : ""}
+        <button class="btn primary" type="submit">${modal.editing ? "Save" : "Add buyer"}</button>
+      </div>
+    </form>
+    <div class="err" id="form-err">${esc(modal.error || "")}</div>
+    <div class="manage-table">
+      <table>
+        <thead><tr><th>Label</th><th>Address</th><th></th></tr></thead>
+        <tbody>${manageBuyerTable(modal)}</tbody>
+      </table>
+    </div>
+  </section></div>`;
+  if (typingName) {
+    const next = root.querySelector(`[name="${CSS.escape(typingName)}"]`);
+    if (next) {
+      next.focus();
+      if (caret != null && next.setSelectionRange) next.setSelectionRange(caret, caretEnd ?? caret);
+    }
+  } else if (modal.editing) {
+    const address = root.querySelector("[name=address]");
+    address?.focus();
+    if (address?.setSelectionRange) address.setSelectionRange(address.value.length, address.value.length);
+  }
+}
+
 function paintModal() {
   const root = document.getElementById("modal");
   if (!state.modal) {
     root.innerHTML = "";
+    root.dataset.mode = "";
+    root.dataset.id = "";
+    root.dataset.sig = "";
+    return;
+  }
+  if (state.modal.mode === "manage-buyers") {
+    paintManageBuyers(root);
     return;
   }
   if (root.dataset.mode === state.modal.mode && root.dataset.id === String(state.modal.id || "")) return;
@@ -2547,7 +2636,7 @@ async function onSubmit(event) {
   const form = event.target;
   if (form.id === "settings") return saveSettings(form);
   if (form.id === "rival-form") return saveRival(form);
-  if (form.id === "buyer-form") return saveBuyer(form);
+  if (form.id === "buyer-form" || form.id === "buyer-manage") return saveBuyer(form);
   if (form.id === "confirm") return runConfirm();
 }
 
@@ -2607,17 +2696,30 @@ async function saveSettings(form) {
 
 async function saveBuyer(form) {
   const data = Object.fromEntries(new FormData(form).entries());
+  const managing = state.modal?.mode === "manage-buyers";
+  const editing = managing ? state.modal.editing : state.modal?.mode === "buyer-edit" ? state.modal.id : null;
   try {
-    if (state.modal.mode === "buyer-edit") {
-      await api(`/api/buyers/${state.modal.id}`, { method: "PATCH", body: data });
-    } else {
-      await api("/api/buyers", { method: "POST", body: data });
+    if (editing) await api(`/api/buyers/${editing}`, { method: "PATCH", body: data });
+    else await api("/api/buyers", { method: "POST", body: data });
+    toast(editing ? "Buyer updated" : "Buyer added");
+    if (managing) {
+      state.modal.editing = null;
+      state.modal.confirmId = null;
+      state.modal.error = "";
+      state.modal.draft = { label: "", address: "" };
+      await load({ fresh: true });
+      return;
     }
     state.modal = null;
     document.getElementById("modal").dataset.mode = "";
-    toast("Buyer saved");
     await load({ fresh: true });
   } catch (error) {
+    if (managing) {
+      state.modal.error = error.message;
+      state.modal.draft = { label: data.label || "", address: data.address || "" };
+      paintModal();
+      return;
+    }
     const node = document.getElementById("form-err");
     if (node) node.textContent = error.message;
   }
@@ -2676,6 +2778,7 @@ async function onClick(event) {
     if (modal) modal.dataset.mode = "";
     paintModal();
     paintDrawer();
+    paintView();
     return;
   }
   if (event.target.closest("a") && !event.target.closest("a").dataset.act) return;
@@ -2820,22 +2923,20 @@ async function onClick(event) {
   }
   if (act === "edit-buyer") {
     const buyer = (state.data.buyers || []).find((item) => item.id === Number(button.dataset.id));
-    if (!buyer) return;
-    state.modal = { mode: "buyer-edit", id: buyer.id, buyer };
+    if (!buyer || state.modal?.mode !== "manage-buyers") return;
+    state.modal.editing = buyer.id;
+    state.modal.confirmId = null;
+    state.modal.error = "";
+    state.modal.draft = { label: buyer.label || "", address: buyer.address || "" };
     paintModal();
     return;
   }
   if (act === "remove-buyer") {
     const buyer = (state.data.buyers || []).find((item) => item.id === Number(button.dataset.id));
-    if (!buyer) return;
-    state.modal = {
-      mode: "confirm",
-      kind: "delete-buyer",
-      id: buyer.id,
-      title: `Delete ${buyerName(buyer)}?`,
-      body: "The wallet leaves the list, and the trades saved for it are removed.",
-      confirm: "Delete",
-    };
+    if (!buyer || state.modal?.mode !== "manage-buyers") return;
+    captureBuyerDraft();
+    state.modal.confirmId = buyer.id;
+    state.modal.error = "";
     paintModal();
     return;
   }
@@ -2869,8 +2970,44 @@ async function onClick(event) {
   }
   if (act === "close") {
     state.modal = null;
-    document.getElementById("modal").dataset.mode = "";
+    paint();
+    return;
+  }
+  if (act === "manage-buyers") {
+    state.modal = { mode: "manage-buyers", editing: null, confirmId: null, error: "", draft: { label: "", address: "" } };
     paintModal();
+    return;
+  }
+  if (act === "buyer-cancel" || act === "buyer-delete-no") {
+    if (state.modal?.mode === "manage-buyers") {
+      state.modal.editing = null;
+      state.modal.confirmId = null;
+      state.modal.error = "";
+      state.modal.draft = { label: "", address: "" };
+      paintModal();
+    }
+    return;
+  }
+  if (act === "buyer-delete-yes") {
+    const id = Number(button.dataset.id);
+    try {
+      await api(`/api/buyers/${id}`, { method: "DELETE" });
+      if (state.modal?.mode === "manage-buyers") {
+        if (state.modal.editing === id) {
+          state.modal.editing = null;
+          state.modal.draft = { label: "", address: "" };
+        }
+        state.modal.confirmId = null;
+        state.modal.error = "";
+      }
+      toast("Buyer deleted");
+      await load({ fresh: true });
+    } catch (error) {
+      if (state.modal?.mode === "manage-buyers") {
+        state.modal.error = error.message;
+        paintModal();
+      } else toast(error.message);
+    }
     return;
   }
   if (act === "close-drawer") {
