@@ -183,6 +183,12 @@ const DEFAULTS = {
   buyerChatId: "",
   buyerAlerts: "0",
   buyerUpdateOffset: "0",
+  trendAlerts: "1",
+  trendWindowMin: "60",
+  trendRising: "3",
+  trendTrending: "5",
+  trendExploding: "7",
+  trendMarket: "10",
 };
 
 const SEED = [
@@ -267,6 +273,38 @@ export function listBuyerChats() {
 
 export function removeBuyerChat(chatId) {
   db.prepare("DELETE FROM buyer_chats WHERE chat_id = ?").run(String(chatId));
+}
+
+export function listTokensSince(since) {
+  return db
+    .prepare(
+      `SELECT address, name, symbol, created_at
+       FROM tokens
+       WHERE created_at >= ?
+       ORDER BY created_at ASC`,
+    )
+    .all(since);
+}
+
+export function narrativeAlertLevels(key) {
+  return new Set(
+    db
+      .prepare("SELECT level FROM narrative_alerts WHERE narrative_key = ?")
+      .all(key)
+      .map((row) => row.level),
+  );
+}
+
+export function markNarrativeAlert(key, level) {
+  db.prepare(
+    `INSERT INTO narrative_alerts(narrative_key, level, alerted_at)
+     VALUES(?, ?, ?)
+     ON CONFLICT(narrative_key, level) DO UPDATE SET alerted_at = excluded.alerted_at`,
+  ).run(key, level, nowSec());
+}
+
+export function clearNarrativeAlert(key, level) {
+  db.prepare("DELETE FROM narrative_alerts WHERE narrative_key = ? AND level = ?").run(key, level);
 }
 
 export function listBuyers() {
@@ -482,6 +520,15 @@ db.exec(`
     username TEXT NOT NULL DEFAULT '',
     started_at INTEGER NOT NULL
   );
+
+  CREATE TABLE IF NOT EXISTS narrative_alerts (
+    narrative_key TEXT NOT NULL,
+    level TEXT NOT NULL,
+    alerted_at INTEGER NOT NULL,
+    PRIMARY KEY (narrative_key, level)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_tokens_created ON tokens(created_at);
 `);
 
 db.exec(`

@@ -1173,10 +1173,35 @@ function viewSettings() {
         <input name="buyerBotToken" type="password" autocomplete="off" spellcheck="false" placeholder="@ETHBuyerTrackerBot token from @BotFather" />
         <input name="buyerChatId" autocomplete="off" spellcheck="false" placeholder="Chat id" value="${esc(fieldValue("buyerChatId"))}" />
       </div>
+      <div class="field wide">
+        <label>Narrative trends</label>
+        <p class="keys-note">Counts launches that share a name, a ticker, or the same narrative inside the window. Rising is the start. Trending means it has caught on. Exploding means it is running. The last count means the whole market is on that name. Alerts go out on the launch bot.</p>
+      </div>
+      <div class="field">
+        <label>Window (minutes)</label>
+        <input name="trendWindowMin" type="number" min="5" max="1440" step="1" value="${esc(fieldValue("trendWindowMin") || "60")}" />
+      </div>
+      <div class="field">
+        <label>Rising count</label>
+        <input name="trendRising" type="number" min="2" max="500" step="1" value="${esc(fieldValue("trendRising") || "3")}" />
+      </div>
+      <div class="field">
+        <label>Trending count</label>
+        <input name="trendTrending" type="number" min="2" max="500" step="1" value="${esc(fieldValue("trendTrending") || "5")}" />
+      </div>
+      <div class="field">
+        <label>Exploding count</label>
+        <input name="trendExploding" type="number" min="2" max="500" step="1" value="${esc(fieldValue("trendExploding") || "7")}" />
+      </div>
+      <div class="field">
+        <label>Whole market count</label>
+        <input name="trendMarket" type="number" min="2" max="500" step="1" value="${esc(fieldValue("trendMarket") || "10")}" />
+      </div>
     </div>
     <label class="check"><input type="checkbox" name="fastMode" ${settings.fastMode === "1" ? "checked" : ""}/> Fast Mode: watch Dextools live pairs and paid boards, and alert only when the token is tied to a rival</label>
     <label class="check"><input type="checkbox" name="telegramAlerts" ${settings.telegramAlerts === "1" ? "checked" : ""}/> Send a Telegram card for each new launch and paid promotion</label>
     <label class="check"><input type="checkbox" name="buyerAlerts" ${settings.buyerAlerts === "1" ? "checked" : ""}/> Send a Buyer Tracker message for each buy or sell</label>
+    <label class="check"><input type="checkbox" name="trendAlerts" ${settings.trendAlerts !== "0" ? "checked" : ""}/> Send a trend alert when a name starts rising, trends, explodes, or takes the market</label>
     <label class="check"><input type="checkbox" name="autoScan" ${settings.autoScan === "1" ? "checked" : ""}/> Keep scanning enabled rivals on a timer</label>
     <label class="check"><input type="checkbox" name="requireFirstFunder" ${settings.requireFirstFunder === "1" ? "checked" : ""}/> Only keep a wallet when this rival is its first real ETH source</label>
       <p class="muted">Sample launches are funded with well under 1 ETH, so the maximum keeps treasury-sized transfers out of the waiting list. A wallet stays on the list when this rival is the first wallet that sent it real ETH. ${state.data.counts.ignored} wallets are hidden by that rule.</p>
@@ -1185,6 +1210,7 @@ function viewSettings() {
       <button class="btn primary" type="submit">Save settings</button>
       <button class="btn" type="button" data-act="telegram-test">Send test message</button>
       <button class="btn" type="button" data-act="buyer-test">Send buyer test</button>
+      <button class="btn" type="button" data-act="trend-samples">Show trend messages</button>
       <button class="btn" type="button" data-act="clear-key">Remove Etherscan keys</button>
       <button class="btn" type="button" data-act="clear-telegram">Remove Telegram token</button>
       <button class="btn" type="button" data-act="clear-buyer-token">Remove Buyer Tracker token</button>
@@ -1439,6 +1465,7 @@ async function saveSettings(form) {
   data.requireFirstFunder = form.requireFirstFunder.checked;
   data.telegramAlerts = form.telegramAlerts.checked;
   data.buyerAlerts = form.buyerAlerts.checked;
+  data.trendAlerts = form.trendAlerts.checked;
   const settings = state.data.settings;
   data.scanRangeMode = rangeMode();
   if (!data.scanEndDate) data.scanEndDate = settings.scanEndDate;
@@ -1760,6 +1787,15 @@ async function onClick(event) {
     await api("/api/settings", { method: "PUT", body: { clearTelegramToken: true, telegramAlerts: false } });
     toast("Telegram token removed");
     await load({ fresh: true });
+    return;
+  }
+  if (act === "trend-samples") {
+    try {
+      await api("/api/telegram/trend-samples", { method: "POST", body: {} });
+      toast("Four trend messages sent");
+    } catch (error) {
+      toast(error.message);
+    }
     return;
   }
   if (act === "buyer-test") {

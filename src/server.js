@@ -26,6 +26,7 @@ import { startAthWatch } from "./gmgn.js";
 import { startPaidWatch } from "./paid.js";
 import { autoScanTick, cachedScanRange, decorateScan, enqueueScan, getJob, refreshOne, startLiveTail, stopScan, warmScanRange } from "./scanner.js";
 import { headBlock } from "./chain.js";
+import { sendTrendSamples } from "./narrative.js";
 import { sendBuyerTest, sendTelegram, startBuyerInbox, startTelegramInbox } from "./telegram.js";
 import { ethToWei, normalizeAddress, nowSec, parseApiKeys, zonedUnix } from "./util.js";
 
@@ -371,6 +372,30 @@ app.put("/api/settings", (req, res) => {
     next.buyerBotToken = token;
   }
   if (body.buyerAlerts != null) next.buyerAlerts = body.buyerAlerts ? "1" : "0";
+  if (body.trendAlerts != null) next.trendAlerts = body.trendAlerts ? "1" : "0";
+  if (body.trendWindowMin != null || body.trendRising != null || body.trendTrending != null || body.trendExploding != null || body.trendMarket != null) {
+    const current = getSettings();
+    const windowMin = Number(body.trendWindowMin ?? current.trendWindowMin ?? 60);
+    const rising = Number(body.trendRising ?? current.trendRising ?? 3);
+    const trending = Number(body.trendTrending ?? current.trendTrending ?? 5);
+    const exploding = Number(body.trendExploding ?? current.trendExploding ?? 7);
+    const market = Number(body.trendMarket ?? current.trendMarket ?? 10);
+    const counts = [rising, trending, exploding, market];
+    if (!Number.isInteger(windowMin) || windowMin < 5 || windowMin > 1440) {
+      return res.status(400).json({ error: "Trend window must be a whole number of minutes from 5 to 1440." });
+    }
+    if (counts.some((count) => !Number.isInteger(count) || count < 2 || count > 500)) {
+      return res.status(400).json({ error: "Trend counts must be whole numbers from 2 to 500." });
+    }
+    if (!(rising < trending && trending < exploding && exploding < market)) {
+      return res.status(400).json({ error: "Each trend count must be higher than the one before it." });
+    }
+    next.trendWindowMin = String(windowMin);
+    next.trendRising = String(rising);
+    next.trendTrending = String(trending);
+    next.trendExploding = String(exploding);
+    next.trendMarket = String(market);
+  }
   if (next.buyerAlerts === "1") {
     const current = getSettings();
     const token = next.buyerBotToken ?? current.buyerBotToken;
@@ -393,6 +418,15 @@ app.put("/api/settings", (req, res) => {
   saved.buyerBotToken = "";
   saved.etherscanApiKey = "";
   res.json(saved);
+});
+
+app.post("/api/telegram/trend-samples", async (_req, res) => {
+  try {
+    await sendTrendSamples();
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
 });
 
 app.post("/api/telegram/buyer-test", async (req, res) => {

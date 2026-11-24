@@ -8,6 +8,7 @@ import {
   tokenExists,
   upsertToken,
 } from "./db.js";
+import { watchNarrative } from "./narrative.js";
 import { ethToWei, nowSec } from "./util.js";
 
 const unrelatedUntil = new Map();
@@ -152,15 +153,17 @@ export async function ensureRivalToken(address, related, hints = {}) {
   const name = meta?.name || hints.name || "";
   const symbol = meta?.symbol || hints.symbol || "";
   if (!name || !symbol) return false;
+  const createdAt = hints.createdAt || nowSec();
   upsertToken({
     address: token,
     deployer: related.deployer,
     name,
     symbol,
     decimals: meta?.decimals ?? hints.decimals ?? 18,
-    createdAt: hints.createdAt || nowSec(),
+    createdAt,
     createdTx: hints.createdTx || related.createdTx || "",
     createdBlock: hints.createdBlock || 0,
   });
+  watchNarrative({ name, symbol, createdAt });
   return true;
 }

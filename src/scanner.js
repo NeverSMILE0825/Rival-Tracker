@@ -45,6 +45,7 @@ import {
 } from "./chain.js";
 import { refreshMarkets } from "./market.js";
 import { watchPaid } from "./paid.js";
+import { watchNarrative } from "./narrative.js";
 import { notifyLaunch } from "./telegram.js";
 import { ethToWei, formatEth, formatKst, normalizeAddress, nowSec, sleep, timezoneLabel, zonedUnix } from "./util.js";
 
@@ -855,6 +856,11 @@ async function saveMints(competitor, tx, receipt) {
       createdBlock: Number(tx.blockNumber),
     });
     if (result.created) {
+      watchNarrative({
+        name: token.meta.name,
+        symbol: token.meta.symbol,
+        createdAt: Number(tx.timeStamp),
+      });
       if (getSettings().fastMode !== "1") {
         addEvent({
           kind: "launch",
@@ -1031,6 +1037,11 @@ async function inspectDeployer(address, settings) {
           createdBlock: Number(tx.blockNumber),
         });
         if (result.created) {
+          watchNarrative({
+            name: token.meta.name,
+            symbol: token.meta.symbol,
+            createdAt: Number(tx.timeStamp),
+          });
           const rival = fundings[0];
           if (getSettings().fastMode !== "1") {
             addEvent({
