@@ -504,7 +504,6 @@ function viewTokens() {
         { label: "Total tx", key: "txTotal", type: "number", align: "right" },
         { label: "24h tx", key: "tx24h", type: "number", align: "right" },
         { label: "Paid Status", key: "paid", type: "number" },
-        { label: "" },
       ],
       displayTokenRows(),
       tokenRow,
@@ -533,6 +532,12 @@ function dexscreenerHref(token) {
   const address = String(token.address || "").toLowerCase();
   if (!/^0x[a-f0-9]{40}$/.test(address)) return "";
   return `https://dexscreener.com/ethereum/${address}`;
+}
+
+function gmgnHref(token) {
+  const address = String(token.address || "").toLowerCase();
+  if (!/^0x[a-f0-9]{40}$/.test(address)) return "";
+  return `https://gmgn.ai/eth/token/${address}`;
 }
 
 function formatBannerAge(unix) {
@@ -667,10 +672,6 @@ function tokenRow(token) {
     <td class="num">${esc(formatCount(token.txTotal))}</td>
     <td class="num">${esc(formatCount(token.tx24h))}</td>
     <td class="paid-cell">${paidCell(token.payments, true)}</td>
-    <td class="links">
-      ${dextoolsHref(token) ? `<a class="link-pill" href="${esc(dextoolsHref(token))}" target="_blank" rel="noreferrer">Dextools</a>` : ""}
-      ${dexscreenerHref(token) ? `<a class="link-pill" href="${esc(dexscreenerHref(token))}" target="_blank" rel="noreferrer">Dexscreener</a>` : ""}
-    </td>
   </tr>`;
 }
 
@@ -1792,6 +1793,7 @@ function paintDrawer() {
       <div class="action-row">
         ${dexscreenerHref(token) ? `<a class="action" href="${esc(dexscreenerHref(token))}" target="_blank" rel="noreferrer">Dexscreener</a>` : ""}
         ${dextoolsHref(token) ? `<a class="action" href="${esc(dextoolsHref(token))}" target="_blank" rel="noreferrer">Dextools</a>` : ""}
+        ${gmgnHref(token) ? `<a class="action" href="${esc(gmgnHref(token))}" target="_blank" rel="noreferrer">GMGN</a>` : ""}
         ${/^0x[a-f0-9]{40}$/.test(String(token.address || "")) ? `<a class="action" href="https://etherscan.io/token/${esc(token.address)}" target="_blank" rel="noreferrer">Etherscan</a>` : ""}
         <button class="action" data-act="copy" data-value="${esc(token.address)}">Copy</button>
         <button class="action" data-act="drawer-wallet" data-address="${esc(token.deployer)}">Creator</button>
