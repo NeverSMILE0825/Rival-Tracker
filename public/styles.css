@@ -118,6 +118,11 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 
 .toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 12px; }
 .trend-status { margin: 0 0 12px; }
+.min-count {
+  display: flex; align-items: center; gap: 8px; flex: 0 0 auto; white-space: nowrap;
+  color: var(--muted); font-size: 12px; font-weight: 650; letter-spacing: 0.04em; text-transform: uppercase;
+}
+.min-count input { width: 72px; min-width: 72px; flex: 0 0 72px; }
 .trend-detail td { padding: 4px 12px 16px; background: rgba(255,255,255,0.02); }
 .trend-pairs { width: 100%; border-collapse: collapse; }
 .trend-pairs th, .trend-pairs td { padding: 6px 8px; font-size: 12px; }
@@ -128,7 +133,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 }
 .chip.on { background: var(--text); color: #111; border-color: transparent; }
 .chip:hover { color: var(--text); }
-.search, .field input, .field textarea, .field select {
+.search, .field input, .field textarea, .field select, .min-count input {
   background: #0c1016; border: 1px solid var(--line); border-radius: 10px; padding: 9px 11px; outline: none; width: 100%;
 }
 .search { min-width: 220px; width: 260px; }

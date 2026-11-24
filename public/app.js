@@ -19,6 +19,7 @@ const state = {
   paidOnly: false,
   sort: { tokens: { key: "launched", dir: "desc" }, buyers: { key: "time", dir: "desc" }, realBuyers: { key: "time", dir: "desc" }, trends: { key: "count", dir: "desc" } },
   trendWindow: "1h",
+  trendMin: "",
   trendOpen: "",
   trends: null,
   realBuyers: null,
@@ -235,8 +236,20 @@ function paint() {
   paintNav();
   paintActions();
   paintScan();
-  const typing = document.activeElement && document.getElementById("view")?.contains(document.activeElement);
-  if (!state.modal && (state.forceView || !typing)) paintView();
+  const view = document.getElementById("view");
+  const field = document.activeElement;
+  const typing = field && view?.contains(field) && field.matches("input, textarea");
+  const typingAct = typing ? field.dataset.act || "" : "";
+  const caret = typing ? field.selectionStart : null;
+  const caretEnd = typing ? field.selectionEnd : null;
+  if (!state.modal) paintView();
+  if (typingAct) {
+    const next = view.querySelector(`[data-act="${CSS.escape(typingAct)}"]`);
+    if (next && document.activeElement !== next) {
+      next.focus();
+      if (caret != null && next.setSelectionRange) next.setSelectionRange(caret, caretEnd);
+    }
+  }
   paintRivalProgress();
   paintModal();
   paintDrawer();
@@ -356,6 +369,7 @@ function paintView() {
     state.sort[state.route]?.key || "",
     state.sort[state.route]?.dir || "",
     state.trendWindow,
+    state.trendMin,
     state.trendOpen,
     state.trends?.window || "",
     state.trends?.pairs || 0,
@@ -1141,25 +1155,42 @@ function trendRow(row) {
   </tr>${open ? trendPairRows(row) : ""}`;
 }
 
+function trendMinimum() {
+  const raw = String(state.trendMin ?? "").trim();
+  if (!raw) return 1;
+  const value = Math.floor(Number(raw));
+  if (!Number.isFinite(value) || value < 1) return 1;
+  return value;
+}
+
 function viewTrends() {
   const board = state.trends;
   const query = state.query.trim().toLowerCase();
+  const minimum = trendMinimum();
   const rows = sortTrendRows(
-    (board?.rows || []).filter((row) => !query || `${row.key} ${row.name}`.toLowerCase().includes(query)),
+    (board?.rows || []).filter((row) => {
+      if ((Number(row.count) || 0) < minimum) return false;
+      if (!query) return true;
+      return `${row.key} ${row.name}`.toLowerCase().includes(query);
+    }),
   );
   const coverage = board?.coverage;
   const waiting = !board || (board.loading && !board.pairs);
+  const listed = minimum <= 1 ? "Showing every name and ticker." : `Showing names and tickers with a count of ${minimum} or more.`;
   const status = !board
     ? "Reading Dextools live pairs."
-    : `${board.pairs || 0} ETH and WETH pairs in this window.${coverage && !coverage.ready ? ` Older pairs are still loading${coverage.oldest ? `, back to ${formatKst(coverage.oldest)}` : ""}.` : ""}`;
+    : `${board.pairs || 0} ETH and WETH pairs in this window. ${listed}${coverage && !coverage.ready ? ` Older pairs are still loading${coverage.oldest ? `, back to ${formatKst(coverage.oldest)}` : ""}.` : ""}`;
   return `
     <div class="toolbar">
       <div class="chips">
         ${TREND_WINDOWS.map(([id, label]) => chip("trendWindow", id, label)).join("")}
       </div>
+      <label class="min-count">Min Count
+        <input data-act="trend-min" inputmode="numeric" min="1" step="1" placeholder="1" value="${esc(state.trendMin)}" />
+      </label>
       <input class="search" data-act="query" placeholder="Search name or ticker" value="${esc(state.query)}" />
     </div>
-    <p class="muted trend-status">${esc(status)} Names and tickers that appear more than once are listed below.</p>
+    <p class="muted trend-status">${esc(status)}</p>
     ${dataTable(
       [
         { label: "Name / ticker", key: "ticker" },
@@ -1169,10 +1200,12 @@ function viewTrends() {
       ],
       rows,
       trendRow,
-      waiting ? "Reading live pairs" : "No repeated name yet",
+      waiting ? "Reading live pairs" : minimum <= 1 ? "No pairs in this window" : "No name reached that count",
       waiting
         ? "ETH and WETH pairs from Dextools live are being saved."
-        : "ETH and WETH pairs from Dextools live show up here once the same name or ticker appears more than once.",
+        : minimum <= 1
+          ? "ETH and WETH pairs from Dextools live show up here."
+          : `ETH and WETH pairs show up here once the same name or ticker appears ${minimum} or more times.`,
     )}`;
 }
 
@@ -2326,6 +2359,15 @@ function onInput(event) {
       input.setSelectionRange(input.value.length, input.value.length);
     }
   }
+  if (event.target.dataset.act === "trend-min") {
+    state.trendMin = event.target.value.replace(/[^\d]/g, "");
+    paintView();
+    const input = document.querySelector("[data-act=trend-min]");
+    if (input) {
+      input.focus();
+      input.setSelectionRange(input.value.length, input.value.length);
+    }
+  }
   if (event.target.dataset.act === "buyer-filter") {
     state.buyerFilter = event.target.value;
     resetPage();
@@ -2504,7 +2546,7 @@ async function onClick(event) {
   if (!button) return;
   const act = button.dataset.act;
   if (act === "route") {
-    state.route = button.dataset.route;
+    enterRoute(button.dataset.route);
     state.query = "";
     location.hash = `/${state.route}`;
     paint();
@@ -2850,8 +2892,17 @@ async function actScan(id, extra = {}) {
   }
 }
 
+function enterRoute(route) {
+  if (route === "trends" && state.route !== "trends") {
+    state.trendWindow = "1h";
+    state.trendOpen = "";
+    state.trends = null;
+  }
+  state.route = route;
+}
+
 window.addEventListener("hashchange", () => {
-  state.route = location.hash.replace("#/", "") || "overview";
+  enterRoute(location.hash.replace("#/", "") || "overview");
   paint();
 });
 

@@ -118,7 +118,6 @@ export function trendBoard(windowId) {
     }
   }
   const rows = [...groups.values()]
-    .filter((group) => group.count >= 2)
     .map((group) => ({
       key: group.key,
       name: usualName(group.names),
