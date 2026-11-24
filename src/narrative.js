@@ -1,7 +1,7 @@
 import {
   clearNarrativeAlert,
   getSettings,
-  listTokensSince,
+  listLivePairsSince,
   markNarrativeAlert,
   narrativeAlertLevels,
 } from "./db.js";
@@ -131,7 +131,7 @@ function collect(token) {
   if (!createdAt || createdAt < since) return [];
   const keys = narrativeKeys(token.name, token.symbol);
   if (!keys.length) return [];
-  const recent = listTokensSince(since);
+  const recent = listLivePairsSince(since);
   const pending = [];
   for (const key of keys) {
     const matches = recent.filter((row) => narrativeKeys(row.name, row.symbol).includes(key));

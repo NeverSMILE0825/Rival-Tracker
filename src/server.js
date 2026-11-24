@@ -28,6 +28,7 @@ import { startProfitWatch } from "./profit.js";
 import { autoScanTick, cachedScanRange, decorateScan, enqueueScan, getJob, refreshOne, startLiveTail, stopScan, warmScanRange } from "./scanner.js";
 import { headBlock } from "./chain.js";
 import { sendTrendSamples } from "./narrative.js";
+import { startTrendWatch, trendBoard } from "./trends.js";
 import { sendBuyerTest, sendTelegram, startBuyerInbox, startTelegramInbox } from "./telegram.js";
 import { realBuyerProgress, realBuyerTrades } from "./realbuyers.js";
 import { ethToWei, normalizeAddress, nowSec, parseApiKeys, zonedUnix } from "./util.js";
@@ -440,6 +441,10 @@ app.put("/api/settings", (req, res) => {
   res.json(saved);
 });
 
+app.get("/api/trends", (req, res) => {
+  res.json(trendBoard(String(req.query.window || "1h")));
+});
+
 app.post("/api/telegram/trend-samples", async (_req, res) => {
   try {
     await sendTrendSamples();
@@ -506,6 +511,7 @@ app.listen(port, "127.0.0.1", () => {
   startAthWatch();
   startBuyerWatch();
   startProfitWatch();
+  startTrendWatch();
   startTelegramInbox();
   startBuyerInbox();
   warmScanRange().catch((error) => console.error("scan range", error.message));

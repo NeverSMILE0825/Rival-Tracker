@@ -17,7 +17,10 @@ const state = {
   buyerFilter: "all",
   mainV4: true,
   paidOnly: false,
-  sort: { tokens: { key: "launched", dir: "desc" }, buyers: { key: "time", dir: "desc" }, realBuyers: { key: "time", dir: "desc" } },
+  sort: { tokens: { key: "launched", dir: "desc" }, buyers: { key: "time", dir: "desc" }, realBuyers: { key: "time", dir: "desc" }, trends: { key: "count", dir: "desc" } },
+  trendWindow: "1h",
+  trendOpen: "",
+  trends: null,
   realBuyers: null,
   buyerChart: null,
   realPageSize: 25,
@@ -29,6 +32,7 @@ const TITLES = {
   tokens: ["Tokens", "Tokens deployed by those funded wallets, with pool, liquidity, and Dextools."],
   rivals: ["Rivals", "Add, rename, or remove the wallets you want to follow."],
   buyers: ["Buyers", "Wallets to follow when they buy or sell a rival token. Tracking runs on its own and does not wait on launch detection."],
+  trends: ["Trends", "Every ETH and WETH pair on Dextools live, grouped by the name or ticker they share."],
   settings: ["Settings", "Choose the start and end time, or a block range, how much ETH counts as funding, and when a pool counts as rugged."],
 };
 
@@ -237,6 +241,7 @@ function paint() {
   paintDrawer();
   paintRealBuyers();
   paintBuyerChart();
+  if (state.route === "trends") ensureTrends();
 }
 
 function paintNav() {
@@ -247,6 +252,7 @@ function paintNav() {
     ["tokens", "Tokens", counts.tokens],
     ["rivals", "Rivals", counts.rivals],
     ["buyers", "Buyers", counts.buyers || 0],
+    ["trends", "Trends", ""],
     ["settings", "Settings", ""],
   ];
   const html = items
@@ -330,6 +336,7 @@ function paintView() {
     tokens: viewTokens,
     rivals: viewRivals,
     buyers: viewBuyers,
+    trends: viewTrends,
     settings: viewSettings,
   }[state.route]();
   const key = [
@@ -347,6 +354,15 @@ function paintView() {
     state.paidOnly ? "paid" : "any",
     state.sort[state.route]?.key || "",
     state.sort[state.route]?.dir || "",
+    state.trendWindow,
+    state.trendOpen,
+    state.trends?.window || "",
+    state.trends?.pairs || 0,
+    state.trends?.rows?.length || 0,
+    state.trends?.rows?.[0]?.count || 0,
+    state.trends?.coverage?.oldest || 0,
+    state.trends?.loading ? "loading" : "ready",
+    state.trends?.at || 0,
     state.buyerFilter,
     (state.data.buyers || []).map((buyer) => `${buyer.id}:${buyer.label}:${buyer.address}`).join(","),
     state.data.buyerTrades?.[0]?.id || 0,
@@ -1068,6 +1084,128 @@ function buyerTradeRow(trade) {
   </tr>`;
 }
 
+const TREND_WINDOWS = [
+  ["1h", "1h"],
+  ["6h", "6h"],
+  ["12h", "12h"],
+  ["24h", "24h"],
+  ["3d", "3d"],
+  ["7d", "7d"],
+];
+
+function trendSortValue(row, key) {
+  if (key === "count" || key === "latest") return Number(row[key]) || 0;
+  if (key === "name") return row.name || row.key || "";
+  if (key === "ticker") return row.key || "";
+  return "";
+}
+
+function sortTrendRows(rows) {
+  const sort = state.sort.trends || { key: "count", dir: "desc" };
+  const factor = sort.dir === "asc" ? 1 : -1;
+  return [...rows].sort((a, b) => compareSort(trendSortValue(a, sort.key), trendSortValue(b, sort.key), factor));
+}
+
+function trendPairRows(row) {
+  const body = row.pairs
+    .map(
+      (pair) => `<tr>
+        <td>${esc(formatKst(pair.createdAt))}</td>
+        <td><b>${esc(pair.symbol || "—")}</b></td>
+        <td>${esc(pair.name || "—")}</td>
+        <td>${esc(pair.quote || "—")}</td>
+        <td class="links"><a class="link-pill" href="https://www.dextools.io/app/ether/pair-explorer/${esc(pair.pair)}" target="_blank" rel="noreferrer">Dextools</a></td>
+      </tr>`,
+    )
+    .join("");
+  const hidden = row.pairs.length < row.count ? `<p class="muted trend-more">Showing the latest ${row.pairs.length} of ${row.count} pairs.</p>` : "";
+  return `<tr class="trend-detail"><td colspan="4">
+    ${hidden}
+    <table class="trend-pairs">
+      <thead><tr><th>Time (${esc(zoneLabel())})</th><th>Ticker</th><th>Name</th><th>Quote</th><th></th></tr></thead>
+      <tbody>${body}</tbody>
+    </table>
+  </td></tr>`;
+}
+
+function trendRow(row) {
+  const open = state.trendOpen === row.key;
+  return `<tr class="clickable" data-act="trend-open" data-key="${esc(row.key)}">
+    <td class="token-cell"><span class="token-name"><b>$${esc(row.key)}</b> <span class="muted">${esc(row.name || "")}</span></span></td>
+    <td class="num">${esc(row.count)}</td>
+    <td>${esc(formatKst(row.latest))}</td>
+    <td class="muted">${open ? "Hide pairs" : "Show pairs"}</td>
+  </tr>${open ? trendPairRows(row) : ""}`;
+}
+
+function viewTrends() {
+  const board = state.trends;
+  const query = state.query.trim().toLowerCase();
+  const rows = sortTrendRows(
+    (board?.rows || []).filter((row) => !query || `${row.key} ${row.name}`.toLowerCase().includes(query)),
+  );
+  const coverage = board?.coverage;
+  const waiting = !board || (board.loading && !board.pairs);
+  const status = !board
+    ? "Reading Dextools live pairs."
+    : `${board.pairs || 0} ETH and WETH pairs in this window.${coverage && !coverage.ready ? ` Older pairs are still loading${coverage.oldest ? `, back to ${formatKst(coverage.oldest)}` : ""}.` : ""}`;
+  return `
+    <div class="toolbar">
+      <div class="chips">
+        ${TREND_WINDOWS.map(([id, label]) => chip("trendWindow", id, label)).join("")}
+      </div>
+      <input class="search" data-act="query" placeholder="Search name or ticker" value="${esc(state.query)}" />
+    </div>
+    <p class="muted trend-status">${esc(status)} Names and tickers that appear more than once are listed below.</p>
+    ${dataTable(
+      [
+        { label: "Name / ticker", key: "ticker" },
+        { label: "Count", key: "count", type: "number", align: "right" },
+        { label: `Latest (${zoneLabel()})`, key: "latest", type: "number" },
+        { label: "Pairs" },
+      ],
+      rows,
+      trendRow,
+      waiting ? "Reading live pairs" : "No repeated name yet",
+      waiting
+        ? "ETH and WETH pairs from Dextools live are being saved."
+        : "ETH and WETH pairs from Dextools live show up here once the same name or ticker appears more than once.",
+    )}`;
+}
+
+function ensureTrends() {
+  const windowId = state.trendWindow || "1h";
+  const current = state.trends;
+  const fresh = current && current.window === windowId && !current.loading && Date.now() - Number(current.at || 0) < 8000;
+  if (fresh || (current?.loading && current.window === windowId)) return;
+  const keep = current?.window === windowId ? current : null;
+  state.trends = {
+    window: windowId,
+    loading: true,
+    at: keep?.at || 0,
+    rows: keep?.rows || [],
+    pairs: keep?.pairs || 0,
+    coverage: keep?.coverage || null,
+    error: "",
+  };
+  fetch(`/api/trends?window=${encodeURIComponent(windowId)}`)
+    .then(async (response) => {
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error || "Trends could not be loaded.");
+      return body;
+    })
+    .then((body) => {
+      if ((state.trendWindow || "1h") !== windowId) return;
+      state.trends = { ...body, window: windowId, loading: false, at: Date.now(), error: "" };
+      paint();
+    })
+    .catch((error) => {
+      if ((state.trendWindow || "1h") !== windowId) return;
+      state.trends = { window: windowId, loading: false, at: Date.now(), rows: keep?.rows || [], pairs: keep?.pairs || 0, coverage: keep?.coverage || null, error: error.message };
+      paint();
+    });
+}
+
 function viewRivals() {
   return `
     <div class="toolbar"><button class="btn primary" data-act="add">Add rival</button></div>
@@ -1230,7 +1368,7 @@ function viewSettings() {
       </div>
       <div class="field wide">
         <label>Narrative trends</label>
-        <p class="keys-note">Counts launches that share a name, a ticker, or the same narrative inside the window. Rising is the start. Trending means it has caught on. Exploding means it is running. The last count means the whole market is on that name. Alerts go out on the launch bot.</p>
+        <p class="keys-note">Counts every ETH and WETH pair on Dextools live that shares a name or ticker inside the window. Rival tokens are not required. Rising is the start. Trending means it has caught on. Exploding means it is running. The last count means the whole market is on that name. Alerts go out on the launch bot. The Trends page can show 1h, 6h, 12h, 24h, 3d, and 7d.</p>
       </div>
       <div class="field">
         <label>Window (minutes)</label>
@@ -2372,6 +2510,18 @@ async function onClick(event) {
   if (act === "chip") {
     state[button.dataset.key] = button.dataset.value;
     resetPage();
+    if (button.dataset.key === "trendWindow") {
+      state.trendOpen = "";
+      state.trends = null;
+      paint();
+      return;
+    }
+    paintView();
+    return;
+  }
+  if (act === "trend-open") {
+    const key = button.dataset.key;
+    state.trendOpen = state.trendOpen === key ? "" : key;
     paintView();
     return;
   }

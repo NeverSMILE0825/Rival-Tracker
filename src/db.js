@@ -286,6 +286,53 @@ export function listTokensSince(since) {
     .all(since);
 }
 
+export function readTrendState(key) {
+  return db.prepare("SELECT value FROM trend_state WHERE key = ?").get(key)?.value || "";
+}
+
+export function writeTrendState(key, value) {
+  db.prepare(
+    "INSERT INTO trend_state(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+  ).run(key, String(value));
+}
+
+export function saveLivePair(pair) {
+  const found = db.prepare("SELECT 1 AS ok FROM live_pairs WHERE pair_address = ?").get(pair.pair);
+  db.prepare(
+    `INSERT INTO live_pairs(pair_address, token_address, name, symbol, quote_symbol, created_at)
+     VALUES(?, ?, ?, ?, ?, ?)
+     ON CONFLICT(pair_address) DO UPDATE SET
+       name = excluded.name,
+       symbol = excluded.symbol,
+       quote_symbol = excluded.quote_symbol`,
+  ).run(pair.pair, pair.token, pair.name, pair.symbol, pair.quote, pair.createdAt);
+  return !found;
+}
+
+export function listLivePairsSince(since) {
+  return db
+    .prepare(
+      `SELECT pair_address AS pair, token_address AS token, name, symbol, quote_symbol AS quote, created_at AS createdAt
+       FROM live_pairs
+       WHERE created_at >= ?
+       ORDER BY created_at ASC`,
+    )
+    .all(since);
+}
+
+export function livePairCoverage() {
+  const row = db.prepare("SELECT MIN(created_at) AS oldest, MAX(created_at) AS newest, COUNT(*) AS n FROM live_pairs").get();
+  return {
+    oldest: Number(row?.oldest) || 0,
+    newest: Number(row?.newest) || 0,
+    stored: Number(row?.n) || 0,
+  };
+}
+
+export function pruneLivePairs(before) {
+  db.prepare("DELETE FROM live_pairs WHERE created_at < ?").run(before);
+}
+
 export function narrativeAlertLevels(key) {
   return new Set(
     db
@@ -561,6 +608,22 @@ db.exec(`
   );
 
   CREATE INDEX IF NOT EXISTS idx_token_swaps_token ON token_swaps(token_address, measured);
+
+  CREATE TABLE IF NOT EXISTS live_pairs (
+    pair_address TEXT PRIMARY KEY,
+    token_address TEXT NOT NULL,
+    name TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    quote_symbol TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_live_pairs_created ON live_pairs(created_at);
+
+  CREATE TABLE IF NOT EXISTS trend_state (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  );
 `);
 
 db.exec(`
