@@ -1011,6 +1011,23 @@ export function getToken(address) {
   return db.prepare("SELECT * FROM tokens WHERE address = ?").get(address);
 }
 
+export function listTokenSwaps(token) {
+  return db
+    .prepare(
+      `SELECT tx_hash, block_number, tx_to, side, amount_wei, measured
+       FROM token_swaps WHERE token_address = ?`,
+    )
+    .all(String(token || "").toLowerCase());
+}
+
+export function listTokenPairAddresses(token) {
+  return db
+    .prepare("SELECT pair_address FROM token_pairs WHERE token_address = ?")
+    .all(String(token || "").toLowerCase())
+    .map((row) => String(row.pair_address || "").toLowerCase())
+    .filter((pair) => /^0x[a-f0-9]{40}$/.test(pair) || /^0x[a-f0-9]{64}$/.test(pair));
+}
+
 export function setTokenLogo(address, url) {
   const logo = String(url || "").trim();
   if (!logo.startsWith("https://")) return;

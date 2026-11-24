@@ -29,6 +29,7 @@ import { autoScanTick, cachedScanRange, decorateScan, enqueueScan, getJob, refre
 import { headBlock } from "./chain.js";
 import { sendTrendSamples } from "./narrative.js";
 import { sendBuyerTest, sendTelegram, startBuyerInbox, startTelegramInbox } from "./telegram.js";
+import { realBuyerTrades } from "./realbuyers.js";
 import { ethToWei, normalizeAddress, nowSec, parseApiKeys, zonedUnix } from "./util.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -49,6 +50,18 @@ function publicSnapshot() {
 
 app.get("/api/snapshot", (_req, res) => {
   res.json(publicSnapshot());
+});
+
+app.get("/api/tokens/:address/real-buyers", async (req, res) => {
+  const address = normalizeAddress(req.params.address);
+  if (!address) return res.status(400).json({ error: "Enter a valid token address." });
+  try {
+    const trades = await realBuyerTrades(address);
+    if (!trades) return res.status(404).json({ error: "That token is not in the tracker yet." });
+    res.json(trades);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
 app.get("/api/head", async (_req, res) => {

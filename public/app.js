@@ -13,11 +13,13 @@ const state = {
   scanRangeMode: "",
   settingsDraft: null,
   pageSize: 50,
-  pages: { waiting: 1, tokens: 1, buyers: 1 },
+  pages: { waiting: 1, tokens: 1, buyers: 1, realBuyers: 1 },
   buyerFilter: "all",
   mainV4: true,
   paidOnly: false,
-  sort: { tokens: { key: "launched", dir: "desc" }, buyers: { key: "time", dir: "desc" } },
+  sort: { tokens: { key: "launched", dir: "desc" }, buyers: { key: "time", dir: "desc" }, realBuyers: { key: "time", dir: "desc" } },
+  realBuyers: null,
+  realPageSize: 25,
 };
 
 const TITLES = {
@@ -226,6 +228,7 @@ function paint() {
   paintRivalProgress();
   paintModal();
   paintDrawer();
+  paintRealBuyers();
 }
 
 function paintNav() {
@@ -1311,6 +1314,196 @@ function preferredPair(token) {
   );
 }
 
+function formatExact(unix) {
+  if (!unix) return "—";
+  const date = new Date((Number(unix) + zoneOffset() * 3600) * 1000);
+  const pad = (value) => String(value).padStart(2, "0");
+  return `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())} ${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}:${pad(date.getUTCSeconds())}`;
+}
+
+function realSortValue(row, key) {
+  if (key === "no") return row.no;
+  if (key === "time") return row.time;
+  if (key === "type") return row.type || "";
+  if (key === "mcap") return row.mcap;
+  if (key === "amount") return row.amountWei || null;
+  if (key === "count") return row.count;
+  if (key === "maker") return row.maker || "";
+  if (key === "tx") return row.tx || "";
+  return "";
+}
+
+function sortedRealRows(rows) {
+  const sort = state.sort.realBuyers || { key: "time", dir: "desc" };
+  const factor = sort.dir === "asc" ? 1 : -1;
+  return [...rows].sort((a, b) => compareSort(realSortValue(a, sort.key), realSortValue(b, sort.key), factor));
+}
+
+function realHeader(column) {
+  const sort = state.sort.realBuyers || {};
+  const active = sort.key === column.key;
+  const mark = active ? (sort.dir === "asc" ? "↑" : "↓") : "";
+  const align = column.align === "right" ? "num" : "";
+  return `<th class="${align}"><button type="button" class="sort ${active ? "on" : ""}" data-act="real-sort" data-key="${esc(column.key)}" data-type="${esc(column.type)}">${esc(column.label)}${mark ? `<span>${mark}</span>` : ""}</button></th>`;
+}
+
+function realPager(page) {
+  const from = page.count ? page.start + 1 : 0;
+  const to = page.start + page.rows.length;
+  const buttons = pageButtons(page.page, page.pages)
+    .map((item) => {
+      if (item === "…") return `<span class="pager-gap" aria-hidden="true">…</span>`;
+      const current = item === page.page;
+      return `<button type="button" class="page-btn ${current ? "on" : ""}" data-act="real-page" data-page="${item}" ${current ? 'aria-current="page"' : ""}>${item}</button>`;
+    })
+    .join("");
+  return `<footer class="pager">
+    <p class="pager-meta">Showing <b>${from.toLocaleString()}–${to.toLocaleString()}</b> of <b>${page.count.toLocaleString()}</b></p>
+    <nav class="pager-pages" aria-label="Real buyer pages">
+      <button type="button" class="page-btn" data-act="real-page" data-page="1" ${page.page === 1 ? "disabled" : ""} aria-label="First page">«</button>
+      <button type="button" class="page-btn" data-act="real-page" data-page="${page.page - 1}" ${page.page === 1 ? "disabled" : ""} aria-label="Previous page">‹</button>
+      ${buttons}
+      <button type="button" class="page-btn" data-act="real-page" data-page="${page.page + 1}" ${page.page === page.pages ? "disabled" : ""} aria-label="Next page">›</button>
+      <button type="button" class="page-btn" data-act="real-page" data-page="${page.pages}" ${page.page === page.pages ? "disabled" : ""} aria-label="Last page">»</button>
+    </nav>
+    <label class="pager-size">Rows
+      <select data-act="real-page-size" aria-label="Rows per page">
+        ${[25, 50, 100].map((size) => `<option value="${size}" ${size === page.size ? "selected" : ""}>${size}</option>`).join("")}
+      </select>
+    </label>
+  </footer>`;
+}
+
+function realBuyerTable(rows) {
+  const columns = [
+    { label: "No", key: "no", type: "number" },
+    { label: `Time (${zoneLabel()})`, key: "time", type: "number" },
+    { label: "Type", key: "type", type: "text" },
+    { label: "M. Cap", key: "mcap", type: "number", align: "right" },
+    { label: "Amount", key: "amount", type: "number", align: "right" },
+    { label: "Count", key: "count", type: "number", align: "right" },
+    { label: "Maker", key: "maker", type: "text" },
+    { label: "Tx", key: "tx", type: "text" },
+  ];
+  const sorted = sortedRealRows(rows);
+  const size = [25, 50, 100].includes(state.realPageSize) ? state.realPageSize : 25;
+  const pages = Math.max(1, Math.ceil(sorted.length / size) || 1);
+  let page = state.pages.realBuyers || 1;
+  if (page > pages) page = pages;
+  if (page < 1) page = 1;
+  state.pages.realBuyers = page;
+  const start = (page - 1) * size;
+  const slice = sorted.slice(start, start + size);
+  const body = slice
+    .map((row) => {
+      const maker = row.maker
+        ? `<a class="addr" href="https://etherscan.io/address/${esc(row.maker)}" target="_blank" rel="noreferrer" title="${esc(row.maker)}">${esc(row.maker)}</a>`
+        : "—";
+      return `<tr>
+        <td class="num">${esc(row.no)}</td>
+        <td>${esc(formatExact(row.time))}</td>
+        <td><span class="pill ${row.type === "buy" ? "live" : "rugged"}">${row.type === "buy" ? "Buy" : "Sell"}</span></td>
+        <td class="num">${esc(row.mcap == null ? "—" : exactUsd(row.mcap))}</td>
+        <td class="num">${esc(row.amountWei ? `${formatEth(row.amountWei)} ETH` : "—")}</td>
+        <td class="num">${esc(row.count == null ? "—" : row.count)}</td>
+        <td class="maker-cell">${maker}</td>
+        <td class="links"><a class="link-pill" href="https://etherscan.io/tx/${esc(row.tx)}" target="_blank" rel="noreferrer">Etherscan</a></td>
+      </tr>`;
+    })
+    .join("");
+  return `<div class="table-panel">
+    <div class="table-scroll">
+      <table>
+        <thead><tr>${columns.map(realHeader).join("")}</tr></thead>
+        <tbody>${body || `<tr><td colspan="8" class="muted">No real buyer trades yet.</td></tr>`}</tbody>
+      </table>
+    </div>
+    ${realPager({ rows: slice, page, pages, start, count: sorted.length, size })}
+  </div>`;
+}
+
+function paintRealBuyers() {
+  let root = document.getElementById("real-buyers");
+  const ledger = state.realBuyers;
+  if (!ledger) {
+    root?.remove();
+    return;
+  }
+  const signature = JSON.stringify({
+    address: ledger.address,
+    loading: ledger.loading,
+    error: ledger.error || "",
+    ready: ledger.ready,
+    rows: ledger.rows || [],
+    sort: state.sort.realBuyers,
+    page: state.pages.realBuyers,
+    size: state.realPageSize,
+  });
+  if (!root) {
+    root = document.createElement("div");
+    root.id = "real-buyers";
+    document.body.appendChild(root);
+  }
+  if (root.dataset.sig === signature) return;
+  root.dataset.sig = signature;
+  const token = (state.data?.tokens || []).find((item) => item.address === ledger.address);
+  const title = token?.symbol || ledger.symbol || "Token";
+  const waiting = !ledger.loading && !ledger.error && !ledger.ready && !(ledger.rows || []).length;
+  const partial = !ledger.loading && !ledger.error && !ledger.ready && (ledger.rows || []).length > 0;
+  const note = ledger.loading
+    ? `<p class="muted buyers-note">Reading real buyer trades…</p>`
+    : ledger.error
+      ? `<p class="muted buyers-note">${esc(ledger.error)}</p>`
+      : waiting
+        ? `<p class="muted buyers-note">Real buyer trades are still being counted.</p>`
+        : partial
+          ? `<p class="muted buyers-note">Some trades are still being counted. The rows below are the ones finished so far.</p>`
+          : "";
+  const table = ledger.loading || ledger.error || waiting ? "" : realBuyerTable(ledger.rows || []);
+  root.innerHTML = `<div class="buyers-back"><section class="buyers-modal" role="dialog" aria-modal="true" aria-label="Real buyers">
+    <div class="buyers-head">
+      <div><h3>Real buyers · ${esc(title)}</h3><p class="muted">Every buy and sell that is not a team transaction.</p></div>
+      <button class="icon-close" data-act="close-real" aria-label="Close">×</button>
+    </div>
+    ${note}
+    ${table}
+  </section></div>`;
+}
+
+async function loadRealBuyers(address) {
+  try {
+    const response = await fetch(`/api/tokens/${address}/real-buyers`);
+    const body = await response.json();
+    if (!response.ok) throw new Error(body.error || "Real buyers could not be loaded.");
+    if (!state.realBuyers || state.realBuyers.address !== address) return;
+    const ordered = [...(body.rows || [])].sort((a, b) => (Number(a.time) || Number(a.block) || 0) - (Number(b.time) || Number(b.block) || 0) || String(a.tx).localeCompare(String(b.tx)));
+    state.realBuyers = {
+      address,
+      loading: false,
+      ready: Boolean(body.ready),
+      symbol: body.symbol || "",
+      error: "",
+      rows: ordered.map((row, index) => ({
+        no: index + 1,
+        time: Number(row.time) || null,
+        type: row.type === "sell" ? "sell" : "buy",
+        mcap: row.mcap == null ? null : Number(row.mcap),
+        amount: row.amountWei ? Number(row.amountWei) / 1e18 : null,
+        amountWei: row.amountWei || "",
+        count: row.count == null ? null : Number(row.count),
+        maker: row.maker || "",
+        tx: row.tx || "",
+      })),
+    };
+  } catch (error) {
+    if (!state.realBuyers || state.realBuyers.address !== address) return;
+    state.realBuyers = { address, loading: false, ready: false, error: error.message, rows: [] };
+  }
+  const root = document.getElementById("real-buyers");
+  if (root) root.dataset.sig = "";
+  paintRealBuyers();
+}
+
 function paintDrawer() {
   let root = document.getElementById("drawer-root");
   if (!state.drawer) {
@@ -1389,6 +1582,7 @@ function paintDrawer() {
         ${/^0x[a-f0-9]{40}$/.test(String(token.address || "")) ? `<a class="action" href="https://etherscan.io/token/${esc(token.address)}" target="_blank" rel="noreferrer">Etherscan</a>` : ""}
         <button class="action" data-act="copy" data-value="${esc(token.address)}">Copy</button>
         <button class="action" data-act="drawer-wallet" data-address="${esc(token.deployer)}">Creator</button>
+        <button class="action" data-act="real-buyers" data-address="${esc(token.address)}">Show Real Buyers</button>
       </div>
       <div class="section-label">Paid</div>
       ${paidCell(token.payments)}
@@ -1471,6 +1665,13 @@ function onInput(event) {
     state.mainV4 = event.target.checked;
     resetPage();
     paintView();
+    return;
+  }
+  if (event.target.dataset.act === "real-page-size") {
+    const size = Number(event.target.value);
+    state.realPageSize = [25, 50, 100].includes(size) ? size : 25;
+    state.pages.realBuyers = 1;
+    paintRealBuyers();
     return;
   }
   if (event.target.dataset.act === "page-size") {
@@ -1598,6 +1799,11 @@ async function runConfirm() {
 }
 
 async function onClick(event) {
+  if (event.target.classList?.contains("buyers-back")) {
+    state.realBuyers = null;
+    paintRealBuyers();
+    return;
+  }
   if (event.target.classList?.contains("drawer-back") || event.target.classList?.contains("modal-back")) {
     state.drawer = null;
     state.modal = null;
@@ -1622,6 +1828,36 @@ async function onClick(event) {
     state[button.dataset.key] = button.dataset.value;
     resetPage();
     paintView();
+    return;
+  }
+  if (act === "close-real") {
+    state.realBuyers = null;
+    paintRealBuyers();
+    return;
+  }
+  if (act === "real-buyers") {
+    const address = button.dataset.address;
+    state.realBuyers = { address, loading: true, ready: false, error: "", rows: [] };
+    state.sort.realBuyers = { key: "time", dir: "desc" };
+    state.pages.realBuyers = 1;
+    paintRealBuyers();
+    loadRealBuyers(address);
+    return;
+  }
+  if (act === "real-sort") {
+    const key = button.dataset.key;
+    const current = state.sort.realBuyers || {};
+    const dir = current.key !== key ? (button.dataset.type === "number" ? "desc" : "asc") : current.dir === "asc" ? "desc" : "asc";
+    state.sort.realBuyers = { key, dir };
+    state.pages.realBuyers = 1;
+    paintRealBuyers();
+    return;
+  }
+  if (act === "real-page") {
+    const page = Number(button.dataset.page);
+    if (!page || button.disabled) return;
+    state.pages.realBuyers = page;
+    paintRealBuyers();
     return;
   }
   if (act === "sort") {
@@ -1911,6 +2147,11 @@ window.addEventListener("hashchange", () => {
 
 window.addEventListener("keydown", (event) => {
   if (event.key !== "Escape") return;
+  if (state.realBuyers) {
+    state.realBuyers = null;
+    paintRealBuyers();
+    return;
+  }
   if (!state.drawer && !state.modal) return;
   state.drawer = null;
   state.modal = null;
