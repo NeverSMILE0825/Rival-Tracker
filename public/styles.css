@@ -263,12 +263,6 @@ tr.clickable:hover td { background: rgba(255,255,255,0.03); }
 .scan-detail { margin-top: 6px; color: var(--text); font-size: 13px; font-weight: 650; }
 .scan-note { margin-top: 2px; white-space: normal; }
 .mini-actions { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
-.buyer {
-  display: grid; grid-template-columns: minmax(220px, 1fr) auto;
-  gap: 10px 14px; align-items: center; padding: 14px 16px;
-}
-.buyer .name { font-weight: 700; }
-.buyer .addr { margin-top: 3px; }
 .section-gap { margin: 22px 0 10px; }
 
 .empty { padding: 48px 20px; text-align: center; color: var(--muted); }

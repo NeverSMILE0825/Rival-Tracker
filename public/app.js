@@ -1032,9 +1032,6 @@ function viewBuyers() {
       <select class="search" data-act="buyer-filter" style="width:180px">${options}</select>
       <input class="search" data-act="query" placeholder="Search token, buyer, transaction" value="${esc(state.query)}" />
     </div>
-    <div class="rivals">
-      ${buyers.length ? buyers.map(buyerCard).join("") : `<div class="card empty"><h3>No buyers yet</h3><p>Add a wallet to record when it buys or sells a rival token.</p></div>`}
-    </div>
     <div class="section-label section-gap">Trades</div>
     ${dataTable(
       [
@@ -1051,15 +1048,6 @@ function viewBuyers() {
       "No trades yet",
       "Buys and sells of rival tokens show up here as new blocks arrive.",
     )}`;
-}
-
-function buyerCard(buyer) {
-  return `<article class="card buyer">
-    <div>
-      <div class="name">${esc(buyerName(buyer))}</div>
-      <div class="addr">${esc(buyer.address)} <button class="icon-btn" data-act="copy" data-value="${esc(buyer.address)}">copy</button></div>
-    </div>
-  </article>`;
 }
 
 function filteredBuyerTrades() {
