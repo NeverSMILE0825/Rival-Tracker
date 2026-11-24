@@ -335,19 +335,19 @@ tr.clickable:hover td { background: rgba(255,255,255,0.03); }
 .chart-key b { color: var(--text); font-weight: 700; }
 .chart-key span { color: var(--muted); }
 .chart-stage { position: relative; flex: 1; min-height: 0; padding: 0 12px 12px; overscroll-behavior: none; touch-action: none; }
-.buyer-chart { width: 100%; height: 100%; display: block; }
+.buyer-chart { width: 100%; height: 100%; display: block; cursor: grab; touch-action: none; }
+body.chart-panning, body.chart-panning * { cursor: grabbing !important; }
 .chart-grid { stroke: rgba(232,236,244,0.08); stroke-width: 1; }
 .chart-axis-line { stroke: rgba(232,236,244,0.28); stroke-width: 1; }
 .chart-label, .chart-axis { fill: var(--muted); font-size: 12px; font-family: inherit; }
 .chart-axis { font-size: 11px; letter-spacing: 0.06em; }
 .chart-grid, .chart-axis-line, .chart-label, .chart-axis { pointer-events: none; }
-.chart-zoom-x, .chart-zoom-y { fill: transparent; }
-.chart-zoom-x { cursor: ew-resize; }
-.chart-zoom-y { cursor: ns-resize; }
+.chart-zoom-x, .chart-zoom-y { fill: transparent; cursor: grab; }
+.buyer-chart.is-panning, .buyer-chart.is-panning .chart-point { cursor: grabbing; }
 .chart-line { fill: none; stroke: #d5e4f7; stroke-width: 1.7; stroke-linejoin: round; stroke-linecap: round; pointer-events: none; }
 .chart-area { fill: rgba(213, 228, 247, 0.1); stroke: none; pointer-events: none; }
 .chart-token-key i { width: 18px; height: 3px; border-radius: 99px; background: #d5e4f7; display: inline-block; }
-.chart-point { cursor: pointer; }
+.chart-point { cursor: grab; }
 .chart-ring { fill: transparent; stroke-width: 2.4; }
 .chart-ring.buy { stroke: var(--green); }
 .chart-ring.sell { stroke: var(--red); }

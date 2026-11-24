@@ -217,6 +217,10 @@ function paint() {
       document.body.addEventListener("click", onClick);
       document.body.addEventListener("mouseover", onChartHover);
       window.addEventListener("wheel", onChartWheel, { passive: false, capture: true });
+      window.addEventListener("pointerdown", onChartPointerDown, true);
+      window.addEventListener("pointermove", onChartPointerMove, true);
+      window.addEventListener("pointerup", onChartPointerUp, true);
+      window.addEventListener("pointercancel", onChartPointerUp, true);
       document.body.addEventListener("submit", onSubmit);
       document.body.addEventListener("input", onInput);
       document.body.addEventListener("change", onKeyFile);
@@ -1662,6 +1666,24 @@ function clampSpan(min, max, anchor, factor, fullMin, fullMax, minSpan) {
   return [lo, hi];
 }
 
+function shiftSpan(min, max, delta, fullMin, fullMax) {
+  const span = max - min;
+  let lo = min + delta;
+  let hi = max + delta;
+  if (lo < fullMin) {
+    lo = fullMin;
+    hi = fullMin + span;
+  }
+  if (hi > fullMax) {
+    hi = fullMax;
+    lo = fullMax - span;
+  }
+  lo = Math.max(fullMin, lo);
+  hi = Math.min(fullMax, hi);
+  if (!(hi > lo)) return [fullMin, fullMax];
+  return [lo, hi];
+}
+
 function sameRange(view, extent) {
   const spanT = extent.maxT - extent.minT || 1;
   const spanY = extent.maxY - extent.minY || 1;
@@ -1786,7 +1808,21 @@ function buyerChartSvg(rows, view, candles = []) {
   </svg>`;
 }
 
-let chartWheelFrame = 0;
+let chartPaintFrame = 0;
+let chartDrag = null;
+
+function scheduleChartPaint() {
+  if (chartPaintFrame) return;
+  chartPaintFrame = requestAnimationFrame(() => {
+    chartPaintFrame = 0;
+    const tip = document.querySelector("#buyer-chart .chart-tip");
+    if (tip) tip.hidden = true;
+    const root = document.getElementById("buyer-chart");
+    if (root) root.dataset.sig = "";
+    paintBuyerChart();
+    if (chartDrag?.moved) document.querySelector("#buyer-chart .buyer-chart")?.classList.add("is-panning");
+  });
+}
 
 function onChartWheel(event) {
   const chartRoot = event.target.closest?.("#buyer-chart");
@@ -1803,14 +1839,16 @@ function onChartWheel(event) {
   const current = chartView(state.buyerChart.view, extent);
   const point = svgPoint(event, svg);
   const next = { ...current };
-  const onIcon = Boolean(event.target.closest?.(".chart-point"));
-  if (!onIcon && point.x < CHART.pad.l - 8) {
+  const onPrice = point.x < CHART.pad.l - 8;
+  const onTime = !onPrice && point.y > CHART.height - CHART.pad.b;
+  if (!onTime) {
     const span = current.maxY - current.minY || 1;
     const ratio = Math.min(1, Math.max(0, (point.y - CHART.pad.t) / (CHART.height - CHART.pad.t - CHART.pad.b)));
     const anchor = current.maxY - ratio * span;
     const minSpan = Math.min(extent.maxY - extent.minY, Math.max((extent.maxY - extent.minY) * 0.02, 1));
     [next.minY, next.maxY] = clampSpan(current.minY, current.maxY, anchor, factor, extent.minY, extent.maxY, minSpan);
-  } else {
+  }
+  if (!onPrice) {
     const span = current.maxT - current.minT || 1;
     const ratio = Math.min(1, Math.max(0, (point.x - CHART.pad.l) / (CHART.width - CHART.pad.l - CHART.pad.r)));
     const anchor = current.minT + ratio * span;
@@ -1818,15 +1856,64 @@ function onChartWheel(event) {
     [next.minT, next.maxT] = clampSpan(current.minT, current.maxT, anchor, factor, extent.minT, extent.maxT, minSpan);
   }
   state.buyerChart.view = sameRange(next, extent) ? null : next;
-  if (chartWheelFrame) return;
-  chartWheelFrame = requestAnimationFrame(() => {
-    chartWheelFrame = 0;
-    const tip = document.querySelector("#buyer-chart .chart-tip");
-    if (tip) tip.hidden = true;
-    const root = document.getElementById("buyer-chart");
-    if (root) root.dataset.sig = "";
-    paintBuyerChart();
-  });
+  scheduleChartPaint();
+}
+
+function onChartPointerDown(event) {
+  if (event.button !== 0 || chartDrag) return;
+  const chartRoot = event.target.closest?.("#buyer-chart");
+  const svg = chartRoot?.querySelector(".buyer-chart");
+  if (!svg || event.target.closest?.(".chart-tip, a, button") || !state.buyerChart?.rows?.length) return;
+  const extent = chartExtent(state.buyerChart.rows, state.buyerChart.candles || []);
+  if (!extent) return;
+  const point = svgPoint(event, svg);
+  const onPrice = point.x < CHART.pad.l - 8;
+  const onTime = point.y > CHART.height - CHART.pad.b && !onPrice;
+  chartDrag = {
+    pointerId: event.pointerId,
+    x: point.x,
+    y: point.y,
+    view: { ...chartView(state.buyerChart.view, extent) },
+    axis: onPrice ? "y" : onTime ? "x" : "both",
+    moved: false,
+  };
+  event.preventDefault();
+}
+
+function onChartPointerMove(event) {
+  if (!chartDrag || event.pointerId !== chartDrag.pointerId || !state.buyerChart) return;
+  const svg = document.querySelector("#buyer-chart .buyer-chart");
+  if (!svg) return;
+  const extent = chartExtent(state.buyerChart.rows, state.buyerChart.candles || []);
+  if (!extent) return;
+  const point = svgPoint(event, svg);
+  const dx = point.x - chartDrag.x;
+  const dy = point.y - chartDrag.y;
+  if (!chartDrag.moved && Math.hypot(dx, dy) < 3) return;
+  chartDrag.moved = true;
+  event.preventDefault();
+  const base = chartDrag.view;
+  const next = { ...base };
+  const plotW = CHART.width - CHART.pad.l - CHART.pad.r;
+  const plotH = CHART.height - CHART.pad.t - CHART.pad.b;
+  if (chartDrag.axis !== "y") {
+    const timePerPx = (base.maxT - base.minT) / plotW;
+    [next.minT, next.maxT] = shiftSpan(base.minT, base.maxT, -dx * timePerPx, extent.minT, extent.maxT);
+  }
+  if (chartDrag.axis !== "x") {
+    const capPerPx = (base.maxY - base.minY) / plotH;
+    [next.minY, next.maxY] = shiftSpan(base.minY, base.maxY, dy * capPerPx, extent.minY, extent.maxY);
+  }
+  state.buyerChart.view = sameRange(next, extent) ? null : next;
+  document.body.classList.add("chart-panning");
+  scheduleChartPaint();
+}
+
+function onChartPointerUp(event) {
+  if (!chartDrag || event.pointerId !== chartDrag.pointerId) return;
+  chartDrag = null;
+  document.body.classList.remove("chart-panning");
+  document.querySelector("#buyer-chart .buyer-chart")?.classList.remove("is-panning");
 }
 
 function paintBuyerChart() {
@@ -1868,7 +1955,7 @@ function paintBuyerChart() {
     : `${note}<div class="chart-stage">${plot}<div class="chart-tip" hidden></div></div>`;
   root.innerHTML = `<div class="chart-back"><section class="buyers-modal chart-modal" role="dialog" aria-modal="true" aria-label="Buyer chart">
     <div class="buyers-head">
-      <div><h3>Buyer chart · ${esc(title)}</h3><p class="muted">The line is the token market cap. Each icon is a real buyer trade: a green circle is a buy and a red circle is a sell. Scroll up to zoom in and down to zoom out.</p></div>
+      <div><h3>Buyer chart · ${esc(title)}</h3><p class="muted">The line is the token market cap. Each icon is a real buyer trade: a green circle is a buy and a red circle is a sell. Drag the chart to move it. Scroll up to zoom in and down to zoom out.</p></div>
       <button class="icon-close" data-act="close-chart" aria-label="Close">×</button>
     </div>
     <div class="chart-legend">${legend}</div>
@@ -1929,7 +2016,10 @@ async function loadBuyerChart(address) {
 
 function onChartHover(event) {
   const tip = document.querySelector("#buyer-chart .chart-tip");
-  if (!tip || !state.buyerChart?.rows) return;
+  if (!tip || !state.buyerChart?.rows || chartDrag?.moved) {
+    if (tip && chartDrag?.moved) tip.hidden = true;
+    return;
+  }
   const point = event.target.closest?.(".chart-point");
   if (!point) {
     if (!event.target.closest?.(".chart-tip")) tip.hidden = true;
