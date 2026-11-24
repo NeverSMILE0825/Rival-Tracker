@@ -216,7 +216,7 @@ function paint() {
     if (!document.documentElement.dataset.bound) {
       document.body.addEventListener("click", onClick);
       document.body.addEventListener("mouseover", onChartHover);
-      document.body.addEventListener("wheel", onChartWheel, { passive: false, capture: true });
+      window.addEventListener("wheel", onChartWheel, { passive: false, capture: true });
       document.body.addEventListener("submit", onSubmit);
       document.body.addEventListener("input", onInput);
       document.body.addEventListener("change", onKeyFile);
@@ -1586,10 +1586,14 @@ function chartView(view, extent) {
   };
 }
 
-function clampSpan(min, max, fullMin, fullMax, minSpan) {
-  const full = fullMax - fullMin;
-  const span = Math.min(Math.max(max - min, Math.min(minSpan, full)), full);
-  let lo = (min + max) / 2 - span / 2;
+function clampSpan(min, max, anchor, factor, fullMin, fullMax, minSpan) {
+  const full = Math.max(fullMax - fullMin, 0);
+  const current = Math.max(max - min, 0);
+  let span = current * factor;
+  const floor = Math.min(full || span, Math.max(minSpan, 0));
+  if (full) span = Math.min(Math.max(span, floor), full);
+  const weight = current ? (anchor - min) / current : 0.5;
+  let lo = anchor - weight * span;
   let hi = lo + span;
   if (lo < fullMin) {
     hi += fullMin - lo;
@@ -1599,7 +1603,10 @@ function clampSpan(min, max, fullMin, fullMax, minSpan) {
     lo -= hi - fullMax;
     hi = fullMax;
   }
-  return [Math.max(fullMin, lo), Math.min(fullMax, hi)];
+  lo = Math.max(fullMin, lo);
+  hi = Math.min(fullMax, hi);
+  if (!(hi > lo)) return [fullMin, fullMax];
+  return [lo, hi];
 }
 
 function sameRange(view, extent) {
@@ -1620,9 +1627,12 @@ function svgPoint(event, svg) {
 }
 
 function wheelPixels(event) {
-  if (event.deltaMode === 1) return event.deltaY * 16;
-  if (event.deltaMode === 2) return event.deltaY * CHART.height;
-  return event.deltaY;
+  const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? 480 : 1;
+  let delta = Number(event.deltaY) * unit;
+  if (!delta && event.wheelDeltaY) delta = -Number(event.wheelDeltaY);
+  else if (!delta && event.wheelDelta) delta = -Number(event.wheelDelta);
+  if (Math.abs(Number(event.deltaX)) > Math.abs(Number(event.deltaY))) delta = Number(event.deltaX) * unit;
+  return Number.isFinite(delta) ? delta : 0;
 }
 
 function chartUsd(value, span) {
@@ -1707,15 +1717,22 @@ function buyerChartSvg(rows, view) {
   </svg>`;
 }
 
+let chartWheelFrame = 0;
+
 function onChartWheel(event) {
-  const svg = event.target.closest?.(".buyer-chart");
-  if (!svg || !state.buyerChart?.rows?.length) return;
+  const chartRoot = event.target.closest?.("#buyer-chart");
+  const svg = chartRoot?.querySelector(".buyer-chart");
+  const overPlot = event.target.closest?.(".chart-stage, .buyer-chart");
+  if (!svg || !overPlot || !state.buyerChart?.rows?.length) return;
   const extent = chartExtent(state.buyerChart.rows);
   if (!extent) return;
+  const pixels = wheelPixels(event);
+  if (!pixels) return;
   event.preventDefault();
+  event.stopPropagation();
+  const factor = Math.exp(Math.max(-1600, Math.min(1600, pixels)) * 0.0048);
   const current = chartView(state.buyerChart.view, extent);
   const point = svgPoint(event, svg);
-  const factor = Math.exp(Math.max(-1, Math.min(1, wheelPixels(event) / 80)) * 0.55);
   const next = { ...current };
   const onIcon = Boolean(event.target.closest?.(".chart-point"));
   if (!onIcon && point.x < CHART.pad.l - 8) {
@@ -1723,18 +1740,24 @@ function onChartWheel(event) {
     const ratio = Math.min(1, Math.max(0, (point.y - CHART.pad.t) / (CHART.height - CHART.pad.t - CHART.pad.b)));
     const anchor = current.maxY - ratio * span;
     const minSpan = Math.min(extent.maxY - extent.minY, Math.max((extent.maxY - extent.minY) * 0.02, 1));
-    [next.minY, next.maxY] = clampSpan(anchor - (anchor - current.minY) * factor, anchor + (current.maxY - anchor) * factor, extent.minY, extent.maxY, minSpan);
+    [next.minY, next.maxY] = clampSpan(current.minY, current.maxY, anchor, factor, extent.minY, extent.maxY, minSpan);
   } else {
     const span = current.maxT - current.minT || 1;
     const ratio = Math.min(1, Math.max(0, (point.x - CHART.pad.l) / (CHART.width - CHART.pad.l - CHART.pad.r)));
     const anchor = current.minT + ratio * span;
     const minSpan = Math.min(extent.maxT - extent.minT, 45);
-    [next.minT, next.maxT] = clampSpan(anchor - (anchor - current.minT) * factor, anchor + (current.maxT - anchor) * factor, extent.minT, extent.maxT, minSpan);
+    [next.minT, next.maxT] = clampSpan(current.minT, current.maxT, anchor, factor, extent.minT, extent.maxT, minSpan);
   }
   state.buyerChart.view = sameRange(next, extent) ? null : next;
-  const tip = document.querySelector("#buyer-chart .chart-tip");
-  if (tip) tip.hidden = true;
-  paintBuyerChart();
+  if (chartWheelFrame) return;
+  chartWheelFrame = requestAnimationFrame(() => {
+    chartWheelFrame = 0;
+    const tip = document.querySelector("#buyer-chart .chart-tip");
+    if (tip) tip.hidden = true;
+    const root = document.getElementById("buyer-chart");
+    if (root) root.dataset.sig = "";
+    paintBuyerChart();
+  });
 }
 
 function paintBuyerChart() {
