@@ -424,19 +424,19 @@ export function saveBuyerTrades(rows) {
   return saved;
 }
 
-export function listBuyerTrades(limit = 1000) {
-  return db
-    .prepare(
-      `SELECT t.id, t.buyer_id, t.token_address, t.tx_hash, t.block_number, t.timestamp, t.side, t.amount, t.amount_usd, t.amount_wei, t.market_cap,
+const BUYER_TRADE_SELECT = `SELECT t.id, t.buyer_id, t.token_address, t.tx_hash, t.block_number, t.timestamp, t.side, t.amount, t.amount_usd, t.amount_wei, t.market_cap,
               b.address AS buyer_address, b.label AS buyer_label,
               k.symbol AS token_symbol, k.name AS token_name
        FROM buyer_trades t
        JOIN buyers b ON b.id = t.buyer_id
-       LEFT JOIN tokens k ON k.address = t.token_address
-       ORDER BY t.timestamp DESC, t.id DESC
-       LIMIT ?`,
-    )
-    .all(limit);
+       LEFT JOIN tokens k ON k.address = t.token_address`;
+
+export function listBuyerTrades(limit = 1000) {
+  return db.prepare(`${BUYER_TRADE_SELECT} ORDER BY t.timestamp DESC, t.id DESC LIMIT ?`).all(limit);
+}
+
+export function listBuyerTradesByBuyer(buyerId) {
+  return db.prepare(`${BUYER_TRADE_SELECT} WHERE t.buyer_id = ? ORDER BY t.timestamp ASC, t.id ASC`).all(buyerId);
 }
 
 export function listCompetitors() {

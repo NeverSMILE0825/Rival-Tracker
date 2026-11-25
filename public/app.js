@@ -30,6 +30,10 @@ const state = {
   realSpan: { from: "", fromUnit: "m", to: "", toUnit: "h" },
   tradeFilter: { address: "", side: "all", minEth: "", maxEth: "" },
   chartAxis: "mcap",
+  walletChart: null,
+  walletAxis: "amount",
+  walletFilter: { side: "all", minEth: "", maxEth: "", start: "", end: "", query: "" },
+  walletPicker: null,
 };
 
 const TITLES = {
@@ -68,6 +72,7 @@ const ACTION_ICONS = {
   add: `<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" d="M12 5v14M5 12h14"/></svg>`,
   edit: `<svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" d="M4 20h4L18.5 9.5a2.1 2.1 0 0 0-3-3L5 17v3z"/><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M13.5 6.5l3 3"/></svg>`,
   delete: `<svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M4 7h16M9 7V5h6v2M7 7l1 13h8l1-13M10 11v6M14 11v6"/></svg>`,
+  chart: `<svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M4 19V5M4 19h16"/><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M7 15l4-5 3 3 5-7"/></svg>`,
 };
 
 function iconAction({ kind, label, act = "", id = "", type = "button", extra = "" }) {
@@ -286,6 +291,7 @@ function paint() {
   paintDrawer();
   paintRealBuyers();
   paintBuyerChart();
+  paintWalletChart();
   if (state.route === "trends") ensureTrends();
 }
 
@@ -1710,6 +1716,7 @@ function manageBuyerTable(modal) {
       <td>${esc(name)}</td>
       <td class="addr">${esc(buyer.address)} ${copyIcon(buyer.address)}</td>
       <td class="mini-actions">
+        ${iconAction({ kind: "chart", label: "Chart", act: "wallet-chart", id: buyer.id })}
         ${iconAction({ kind: "edit", label: "Edit", act: "edit-buyer", id: buyer.id })}
         ${iconAction({ kind: "delete", label: "Delete", act: "remove-buyer", id: buyer.id })}
       </td>
@@ -2645,6 +2652,7 @@ function scheduleChartPaint() {
 }
 
 function onChartWheel(event) {
+  if (event.target.closest?.("#wallet-chart")) return onWalletWheel(event);
   const chartRoot = event.target.closest?.("#buyer-chart");
   const svg = chartRoot?.querySelector(".buyer-chart");
   const overPlot = event.target.closest?.(".chart-stage, .buyer-chart");
@@ -2683,6 +2691,7 @@ function onChartWheel(event) {
 }
 
 function onChartPointerDown(event) {
+  if (event.target.closest?.("#wallet-chart")) return onWalletPointerDown(event);
   if (event.button !== 0 || chartDrag) return;
   if (event.target.closest?.("input, textarea, select, button, a, .trade-filters, .chart-legend, .buyers-head")) return;
   const chartRoot = event.target.closest?.("#buyer-chart");
@@ -2706,6 +2715,7 @@ function onChartPointerDown(event) {
 }
 
 function onChartPointerMove(event) {
+  if (walletDrag) return onWalletPointerMove(event);
   if (!chartDrag || event.pointerId !== chartDrag.pointerId || !state.buyerChart) return;
   const svg = document.querySelector("#buyer-chart .buyer-chart");
   if (!svg) return;
@@ -2736,10 +2746,516 @@ function onChartPointerMove(event) {
 }
 
 function onChartPointerUp(event) {
+  if (walletDrag) return onWalletPointerUp(event);
   if (!chartDrag || event.pointerId !== chartDrag.pointerId) return;
   chartDrag = null;
   document.body.classList.remove("chart-panning");
   document.querySelector("#buyer-chart .buyer-chart")?.classList.remove("is-panning");
+}
+
+const WALLET_PAD = { l: 88, r: 36, t: 18, b: 46 };
+let walletDrag = null;
+let walletPaintFrame = 0;
+
+function emptyWalletFilter() {
+  return { side: "all", minEth: "", maxEth: "", start: "", end: "", query: "" };
+}
+
+function unixParts(unix) {
+  if (!unix) return null;
+  const date = new Date((Number(unix) + zoneOffset() * 3600) * 1000);
+  return {
+    date: `${date.getUTCFullYear()}-${pad2(date.getUTCMonth() + 1)}-${pad2(date.getUTCDate())}`,
+    h: date.getUTCHours(),
+    m: date.getUTCMinutes(),
+    s: date.getUTCSeconds(),
+  };
+}
+
+function partsToUnix(date, hour, minute, second) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(date || ""));
+  if (!match) return "";
+  const utc = Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]), Number(hour) || 0, Number(minute) || 0, Number(second) || 0);
+  return Math.floor(utc / 1000) - zoneOffset() * 3600;
+}
+
+function walletEth(trade) {
+  const amount = Number(trade.amount);
+  if (Number.isFinite(amount) && amount > 0) return amount;
+  if (trade.amount_wei) {
+    const value = Number(trade.amount_wei) / 1e18;
+    return Number.isFinite(value) && value > 0 ? value : 0;
+  }
+  return 0;
+}
+
+function walletY(trade) {
+  if (state.walletAxis === "mcap") return Number(trade.market_cap) > 0 ? Number(trade.market_cap) : 0;
+  return walletEth(trade);
+}
+
+function walletRangeError() {
+  const filter = state.walletFilter;
+  const min = filter.minEth.trim();
+  const max = filter.maxEth.trim();
+  if (min !== "" && max !== "" && Number(min) > Number(max)) return "Min amount is above max amount.";
+  if (filter.start && filter.end && Number(filter.end) < Number(filter.start)) return "End time is before the start time.";
+  return "";
+}
+
+function walletMatches(trade) {
+  const filter = state.walletFilter;
+  if ((filter.side === "buy" || filter.side === "sell") && trade.side !== filter.side) return false;
+  const eth = walletEth(trade);
+  if (filter.minEth.trim() !== "" && !(eth >= Number(filter.minEth))) return false;
+  if (filter.maxEth.trim() !== "" && !(eth <= Number(filter.maxEth))) return false;
+  const time = Number(trade.timestamp) || 0;
+  if (filter.start && time < Number(filter.start)) return false;
+  if (filter.end && time > Number(filter.end)) return false;
+  const query = filter.query.trim().toLowerCase();
+  if (!query) return true;
+  const blob = `${trade.token_symbol || ""} ${trade.token_name || ""} ${trade.token_address || ""}`.toLowerCase();
+  return blob.includes(query);
+}
+
+function walletRows() {
+  return walletRangeError() ? [] : (state.walletChart?.trades || []).filter(walletMatches);
+}
+
+function walletPlotted(rows) {
+  const plotted = [];
+  rows.forEach((trade) => {
+    const y = walletY(trade);
+    if (Number(trade.timestamp) > 0 && y > 0) plotted.push({ trade, y });
+  });
+  return plotted;
+}
+
+function walletExtent(rows) {
+  const plotted = walletPlotted(rows);
+  if (!plotted.length) return null;
+  let minT = Math.min(...plotted.map((item) => Number(item.trade.timestamp)));
+  let maxT = Math.max(...plotted.map((item) => Number(item.trade.timestamp)));
+  let minY = Math.min(...plotted.map((item) => item.y));
+  let maxY = Math.max(...plotted.map((item) => item.y));
+  if (minT === maxT) {
+    minT -= 1800;
+    maxT += 1800;
+  }
+  const ySpan = maxY - minY || maxY || 1;
+  minY = Math.max(0, minY - ySpan * 0.14);
+  maxY += ySpan * 0.16;
+  return { minT, maxT, minY, maxY };
+}
+
+function walletYLabel(value, span) {
+  if (state.walletAxis === "mcap") return chartUsd(value, span);
+  const digits = span < 0.05 ? 4 : span < 1 ? 3 : span < 20 ? 2 : 1;
+  return Number(value).toLocaleString("en-US", { maximumFractionDigits: digits });
+}
+
+function walletTimeLabel(unix, span) {
+  const date = new Date((Number(unix) + zoneOffset() * 3600) * 1000);
+  if (span >= 86400 * 2) return `${MONTHS_SHORT[date.getUTCMonth()]} ${date.getUTCDate()}`;
+  const pad = (value) => String(value).padStart(2, "0");
+  return `${pad(date.getUTCMonth() + 1)}/${pad(date.getUTCDate())} ${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}`;
+}
+
+function formatEthNumber(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "—";
+  const abs = Math.abs(number);
+  const digits = abs >= 100 ? 2 : abs >= 1 ? 3 : 4;
+  const text = number.toLocaleString("en-US", { maximumFractionDigits: digits });
+  return text;
+}
+
+function walletChartSvg(rows, view) {
+  const width = CHART.width;
+  const height = CHART.height;
+  const pad = WALLET_PAD;
+  const extent = walletExtent(rows);
+  const frame = extent ? chartView(view, extent) : null;
+  const plotW = width - pad.l - pad.r;
+  const plotH = height - pad.t - pad.b;
+  const xOf = (time) => pad.l + ((time - frame.minT) / (frame.maxT - frame.minT || 1)) * plotW;
+  const yOf = (value) => pad.t + (1 - (value - frame.minY) / (frame.maxY - frame.minY || 1)) * plotH;
+  const axisName = state.walletAxis === "mcap" ? "M. Cap" : "Amount (ETH)";
+  if (!frame) {
+    return `<svg class="buyer-chart wallet-plot" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" role="img">
+      <text x="${width / 2}" y="${height / 2}" text-anchor="middle" class="chart-label">${esc(walletRangeError() || "No trades in this view")}</text>
+    </svg>`;
+  }
+  const grid = [];
+  const yLabels = [];
+  for (let step = 0; step <= 4; step += 1) {
+    const value = frame.minY + ((frame.maxY - frame.minY) * step) / 4;
+    const y = yOf(value);
+    grid.push(`<line x1="${pad.l}" y1="${y}" x2="${width - pad.r}" y2="${y}" class="chart-grid"/>`);
+    yLabels.push(`<text x="${pad.l - 10}" y="${y + 4}" text-anchor="end" class="chart-label">${esc(walletYLabel(value, frame.maxY - frame.minY))}</text>`);
+  }
+  const xLabels = [];
+  const span = frame.maxT - frame.minT;
+  for (let step = 0; step <= 4; step += 1) {
+    const time = frame.minT + (span * step) / 4;
+    const x = xOf(time);
+    grid.push(`<line x1="${x}" y1="${pad.t}" x2="${x}" y2="${height - pad.b}" class="chart-grid"/>`);
+    xLabels.push(`<text x="${x}" y="${height - pad.b + 20}" text-anchor="middle" class="chart-label">${esc(walletTimeLabel(time, span))}</text>`);
+  }
+  const marks = walletPlotted(rows)
+    .filter((item) => {
+      const time = Number(item.trade.timestamp);
+      return time >= frame.minT && time <= frame.maxT && item.y >= frame.minY && item.y <= frame.maxY;
+    })
+    .map((item) => {
+      const buy = item.trade.side !== "sell";
+      const color = buy ? "#3dd68c" : "#ff5d73";
+      return `<g class="chart-point wallet-point" data-id="${esc(item.trade.id)}">
+        <circle cx="${xOf(Number(item.trade.timestamp))}" cy="${yOf(item.y)}" r="8" fill="${color}" opacity="0.18"/>
+        <circle cx="${xOf(Number(item.trade.timestamp))}" cy="${yOf(item.y)}" r="4.5" fill="${color}" stroke="#0c1016" stroke-width="1.4"/>
+      </g>`;
+    })
+    .join("");
+  return `<svg class="buyer-chart wallet-plot" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" role="img" aria-label="${esc(axisName)} over time">
+    <rect class="chart-zoom-x" x="${pad.l}" y="${pad.t}" width="${plotW}" height="${plotH}"/>
+    ${grid.join("")}
+    ${yLabels.join("")}
+    ${xLabels.join("")}
+    <text x="${(pad.l + width - pad.r) / 2}" y="${height - 4}" text-anchor="middle" class="chart-axis">Time (${esc(zoneLabel())})</text>
+    <text x="16" y="${(pad.t + height - pad.b) / 2}" text-anchor="middle" class="chart-axis" transform="rotate(-90 16 ${(pad.t + height - pad.b) / 2})">${esc(axisName)}</text>
+    <line x1="${pad.l}" y1="${pad.t}" x2="${pad.l}" y2="${height - pad.b}" class="chart-axis-line"/>
+    <line x1="${pad.l}" y1="${height - pad.b}" x2="${width - pad.r}" y2="${height - pad.b}" class="chart-axis-line"/>
+    ${marks}
+  </svg>`;
+}
+
+function walletTipHtml(trade) {
+  const side = trade.side === "sell" ? "Sell" : "Buy";
+  const token = trade.token_symbol || shortAddr(trade.token_address);
+  const name = trade.token_name || "";
+  return `<div class="chart-tip-title"><span class="pill ${trade.side === "buy" ? "live" : "rugged"}">${side}</span><b>${esc(token)}</b></div>
+    <dl>
+      <dt>Name</dt><dd>${esc(name || "—")}</dd>
+      <dt>Contract</dt><dd class="addr">${esc(trade.token_address || "—")}</dd>
+      <dt>Time</dt><dd>${esc(formatExact(trade.timestamp))}</dd>
+      <dt>Amount</dt><dd>${esc(formatEthNumber(walletEth(trade)))} ETH</dd>
+      <dt>M. Cap</dt><dd>${esc(trade.market_cap ? exactUsd(trade.market_cap) : "—")}</dd>
+      <dt>Tx</dt><dd><a href="https://etherscan.io/tx/${esc(trade.tx_hash)}" target="_blank" rel="noreferrer">Etherscan</a></dd>
+    </dl>`;
+}
+
+function walletStatsHtml(rows) {
+  const buys = rows.filter((trade) => trade.side !== "sell");
+  const sells = rows.filter((trade) => trade.side === "sell");
+  const buyEth = buys.reduce((sum, trade) => sum + walletEth(trade), 0);
+  const sellEth = sells.reduce((sum, trade) => sum + walletEth(trade), 0);
+  const card = (label, count, eth, tone) => `<div class="wallet-stat"><span>${label}</span><b class="${tone}">${count.toLocaleString()}</b><em>${esc(formatEthNumber(eth))} ETH</em></div>`;
+  return `${card("Buys", buys.length, buyEth, "up")}${card("Sells", sells.length, sellEth, "down")}<div class="wallet-stat"><span>Net</span><b class="${buyEth - sellEth >= 0 ? "up" : "down"}">${esc(formatEthNumber(buyEth - sellEth))}</b><em>ETH</em></div>`;
+}
+
+function walletWhen(key, label) {
+  const unix = state.walletFilter[key];
+  const parts = unixParts(unix);
+  const open = state.walletPicker?.key === key;
+  const month = open ? state.walletPicker.month : String(parts?.date || zonedToday()).slice(0, 7);
+  const [year, part] = month.split("-").map(Number);
+  const today = zonedToday();
+  const cells = calendarCells(month, parts?.date || "");
+  const days = cells
+    .map((cell) => {
+      const classes = ["cal-day", cell.outside ? "out" : "", cell.iso === today ? "today" : "", cell.selected ? "on" : ""].filter(Boolean).join(" ");
+      return `<button type="button" class="${classes}" data-act="wallet-day" data-key="${key}" data-day="${esc(cell.iso)}">${cell.day}</button>`;
+    })
+    .join("");
+  const clock = parts ? `${pad2(parts.h)}:${pad2(parts.m)}:${pad2(parts.s)}` : "00:00:00";
+  const shown = parts ? `${dateText(parts.date)}` : "Any time";
+  const clear = `<button type="button" class="btn" data-act="wallet-clear" data-key="${key}">Clear</button>`;
+  const now = key === "end" ? `<button type="button" class="btn" data-act="wallet-now">Now</button>` : "";
+  return `<div class="trade-field wallet-when"><span>${esc(label)}</span><div class="when"><div class="picker ${open ? "open" : ""}" data-key="${key}">
+    <button type="button" class="picker-value" data-act="wallet-open" data-key="${key}">
+      <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M3 10h18M8 3v4M16 3v4"/></svg>
+      <b>${esc(shown)}</b><span class="picker-clock-label">${esc(parts ? clock : "")}</span>
+    </button>
+    <div class="picker-pop" role="dialog" aria-label="${esc(label)}"${open ? "" : " hidden"}>
+      <div class="picker-head">
+        <button type="button" class="icon-btn" data-act="wallet-month" data-key="${key}" data-delta="-1" aria-label="Previous month">‹</button>
+        <b>${esc(MONTHS[part - 1] || "")} ${esc(year || "")}</b>
+        <button type="button" class="icon-btn" data-act="wallet-month" data-key="${key}" data-delta="1" aria-label="Next month">›</button>
+      </div>
+      <div class="cal-grid">${["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"].map((day) => `<span class="cal-dow">${day}</span>`).join("")}</div>
+      <div class="cal-grid">${days}</div>
+      <div class="picker-clock">
+        <label>Hour<input data-act="wallet-part" data-key="${key}" data-max="23" inputmode="numeric" maxlength="2" value="${esc(pad2(parts?.h || 0))}" /></label>
+        <span>:</span>
+        <label>Min<input data-act="wallet-part" data-key="${key}" data-max="59" inputmode="numeric" maxlength="2" value="${esc(pad2(parts?.m || 0))}" /></label>
+        <span>:</span>
+        <label>Sec<input data-act="wallet-part" data-key="${key}" data-max="59" inputmode="numeric" maxlength="2" value="${esc(pad2(parts?.s || 0))}" /></label>
+      </div>
+      <div class="picker-foot">${clear}${now}</div>
+    </div>
+  </div></div></div>`;
+}
+
+function walletFilterBar(total) {
+  const filter = state.walletFilter;
+  const side = (id, label) => `<button type="button" class="chip ${filter.side === id ? "on" : ""}" data-act="wallet-side" data-side="${id}">${label}</button>`;
+  const axis = state.walletAxis === "mcap" ? "mcap" : "amount";
+  const matched = walletRows().length;
+  const note = walletRangeError() || `${matched.toLocaleString()} of ${total.toLocaleString()} trades`;
+  return `<div class="trade-filters">
+    <div class="trade-field"><span>Side</span><div class="chips">${side("all", "All")}${side("buy", "Only buy")}${side("sell", "Only sell")}</div></div>
+    <label class="trade-field"><span>Min amount</span><input data-act="wallet-min" inputmode="decimal" placeholder="ETH" value="${esc(filter.minEth)}" /></label>
+    <label class="trade-field"><span>Max amount</span><input data-act="wallet-max" inputmode="decimal" placeholder="ETH" value="${esc(filter.maxEth)}" /></label>
+    ${walletWhen("start", "Start")}
+    ${walletWhen("end", "End")}
+    <label class="trade-field wallet-token"><span>Token</span><input data-act="wallet-query" placeholder="Name, ticker, or CA" spellcheck="false" value="${esc(filter.query)}" /></label>
+    <div class="trade-field"><span>Y axis</span><div class="chips">
+      <button type="button" class="chip ${axis === "amount" ? "on" : ""}" data-act="wallet-axis" data-axis="amount">Amount</button>
+      <button type="button" class="chip ${axis === "mcap" ? "on" : ""}" data-act="wallet-axis" data-axis="mcap">M. Cap</button>
+    </div></div>
+    <p class="muted trade-note">${esc(note)}</p>
+  </div>`;
+}
+
+function walletSignature() {
+  const chart = state.walletChart;
+  const trades = chart?.trades || [];
+  const last = trades[trades.length - 1];
+  return JSON.stringify({
+    id: chart?.buyer?.id || 0,
+    loading: Boolean(chart?.loading),
+    error: chart?.error || "",
+    count: trades.length,
+    last: last?.id || 0,
+    filter: state.walletFilter,
+    axis: state.walletAxis,
+    view: chart?.view || null,
+    picker: state.walletPicker ? { key: state.walletPicker.key, month: state.walletPicker.month } : null,
+  });
+}
+
+function syncWalletChart() {
+  const root = document.getElementById("wallet-chart");
+  const chart = state.walletChart;
+  if (!root || !chart || chart.loading || chart.error) return;
+  const rows = walletRows();
+  const note = root.querySelector(".trade-note");
+  if (note) note.textContent = walletRangeError() || `${rows.length.toLocaleString()} of ${(chart.trades || []).length.toLocaleString()} trades`;
+  const stats = root.querySelector(".wallet-stats");
+  if (stats) stats.innerHTML = walletStatsHtml(rows);
+  const stage = root.querySelector(".chart-stage");
+  if (stage) {
+    const svg = walletChartSvg(rows, chart.view || null);
+    const existing = stage.querySelector("svg");
+    if (existing) existing.outerHTML = svg;
+    else stage.insertAdjacentHTML("afterbegin", svg);
+  }
+  root.querySelectorAll("[data-act='wallet-side']").forEach((button) => button.classList.toggle("on", button.dataset.side === state.walletFilter.side));
+  root.querySelectorAll("[data-act='wallet-axis']").forEach((button) => button.classList.toggle("on", button.dataset.axis === (state.walletAxis === "mcap" ? "mcap" : "amount")));
+  const legend = root.querySelector(".chart-legend");
+  if (legend) legend.innerHTML = walletLegend();
+  root.dataset.sig = walletSignature();
+}
+
+function walletLegend() {
+  const amount = state.walletAxis !== "mcap";
+  return `<span class="chart-key"><i class="wallet-dot buy"></i><b>Buy</b></span><span class="chart-key"><i class="wallet-dot sell"></i><b>Sell</b></span><span class="chart-key"><span>${amount ? "Point height is the ETH amount" : "Point height is the market cap saved with the trade"}</span></span>`;
+}
+
+function paintWalletChart() {
+  let root = document.getElementById("wallet-chart");
+  const chart = state.walletChart;
+  if (!chart) {
+    root?.remove();
+    return;
+  }
+  const signature = walletSignature();
+  if (!root) {
+    root = document.createElement("div");
+    root.id = "wallet-chart";
+    document.body.appendChild(root);
+  }
+  if (root.dataset.sig === signature) return;
+  const field = document.activeElement;
+  const typing = field && root.contains(field) && field.matches("input");
+  const typingAct = typing ? field.dataset.act || "" : "";
+  const typingKey = typing ? field.dataset.key || "" : "";
+  const caret = typing && typeof field.selectionStart === "number" ? field.selectionStart : null;
+  root.dataset.sig = signature;
+  const name = chart.buyer?.label || "Buyer";
+  const address = chart.buyer?.address || "";
+  const rows = chart.trades || [];
+  const matched = chart.loading || chart.error ? [] : walletRows();
+  const blurb = state.walletAxis === "mcap"
+    ? "Each point is one trade. Height is the market cap saved with that trade. Drag the plot to move it. Scroll to zoom."
+    : "Each point is one trade. Height is the ETH amount. Drag the plot to move it. Scroll to zoom.";
+  const body = chart.loading
+    ? `<p class="muted buyers-note">Loading this wallet's trades.</p>`
+    : chart.error
+      ? `<p class="muted buyers-note">${esc(chart.error)}</p>`
+      : `${walletFilterBar(rows.length)}<div class="wallet-stats">${walletStatsHtml(matched)}</div><div class="chart-legend">${walletLegend()}</div><div class="chart-stage">${walletChartSvg(matched, chart.view || null)}<div class="chart-tip" hidden></div></div>`;
+  root.innerHTML = `<div class="chart-back wallet-back"><section class="buyers-modal chart-modal wallet-modal" role="dialog" aria-modal="true" aria-label="Buyer chart">
+    <div class="buyers-head">
+      <div><h3>Buyer chart · ${esc(name)}</h3><p class="muted">${esc(address)} · ${blurb}</p></div>
+      <button class="icon-close" data-act="close-wallet" aria-label="Close">×</button>
+    </div>
+    ${body}
+  </section></div>`;
+  if (typingAct) {
+    const next = [...root.querySelectorAll(`[data-act="${CSS.escape(typingAct)}"]`)].find((node) => !typingKey || node.dataset.key === typingKey);
+    if (next) {
+      next.focus();
+      if (caret != null && next.setSelectionRange) next.setSelectionRange(caret, caret);
+    }
+  }
+  placeOpenPicker();
+}
+
+function scheduleWalletPaint() {
+  if (walletPaintFrame) return;
+  walletPaintFrame = requestAnimationFrame(() => {
+    walletPaintFrame = 0;
+    const tip = document.querySelector("#wallet-chart .chart-tip");
+    if (tip) tip.hidden = true;
+    syncWalletChart();
+    if (walletDrag?.moved) document.querySelector("#wallet-chart .wallet-plot")?.classList.add("is-panning");
+  });
+}
+
+function onWalletWheel(event) {
+  const svg = event.target.closest?.("#wallet-chart")?.querySelector(".wallet-plot");
+  if (!svg || !event.target.closest?.(".chart-stage, .wallet-plot") || !state.walletChart?.trades?.length) return;
+  const rows = walletRows();
+  const extent = walletExtent(rows);
+  if (!extent) return;
+  const pixels = wheelPixels(event);
+  if (!pixels) return;
+  event.preventDefault();
+  event.stopPropagation();
+  const factor = Math.exp(Math.max(-1600, Math.min(1600, pixels)) * 0.0048);
+  const current = chartView(state.walletChart.view, extent);
+  const point = svgPoint(event, svg);
+  const next = { ...current };
+  const pad = WALLET_PAD;
+  const onPrice = point.x < pad.l - 8;
+  const onTime = !onPrice && point.y > CHART.height - pad.b;
+  if (!onTime) {
+    const span = current.maxY - current.minY || 1;
+    const ratio = Math.min(1, Math.max(0, (point.y - pad.t) / (CHART.height - pad.t - pad.b)));
+    const anchor = current.maxY - ratio * span;
+    const floor = state.walletAxis === "mcap" ? 1 : 0.0001;
+    const minSpan = Math.min(extent.maxY - extent.minY, Math.max((extent.maxY - extent.minY) * 0.02, floor));
+    [next.minY, next.maxY] = clampSpan(current.minY, current.maxY, anchor, factor, extent.minY, extent.maxY, minSpan);
+  }
+  if (!onPrice) {
+    const span = current.maxT - current.minT || 1;
+    const ratio = Math.min(1, Math.max(0, (point.x - pad.l) / (CHART.width - pad.l - pad.r)));
+    const anchor = current.minT + ratio * span;
+    const minSpan = Math.min(extent.maxT - extent.minT, 45);
+    [next.minT, next.maxT] = clampSpan(current.minT, current.maxT, anchor, factor, extent.minT, extent.maxT, minSpan);
+  }
+  state.walletChart.view = sameRange(next, extent) ? null : next;
+  scheduleWalletPaint();
+}
+
+function onWalletPointerDown(event) {
+  if (event.button !== 0 || walletDrag) return;
+  if (event.target.closest?.("input, textarea, select, button, a, .trade-filters, .chart-legend, .buyers-head, .wallet-stats")) return;
+  const svg = event.target.closest?.("#wallet-chart")?.querySelector(".wallet-plot");
+  if (!svg || !event.target.closest?.(".chart-stage, .wallet-plot") || !state.walletChart?.trades?.length) return;
+  const extent = walletExtent(walletRows());
+  if (!extent) return;
+  const point = svgPoint(event, svg);
+  const pad = WALLET_PAD;
+  const onPrice = point.x < pad.l - 8;
+  const onTime = point.y > CHART.height - pad.b && !onPrice;
+  walletDrag = {
+    pointerId: event.pointerId,
+    x: point.x,
+    y: point.y,
+    view: { ...chartView(state.walletChart.view, extent) },
+    axis: onPrice ? "y" : onTime ? "x" : "both",
+    moved: false,
+  };
+  event.preventDefault();
+}
+
+function onWalletPointerMove(event) {
+  if (!walletDrag || event.pointerId !== walletDrag.pointerId || !state.walletChart) return;
+  const svg = document.querySelector("#wallet-chart .wallet-plot");
+  if (!svg) return;
+  const extent = walletExtent(walletRows());
+  if (!extent) return;
+  const point = svgPoint(event, svg);
+  const dx = point.x - walletDrag.x;
+  const dy = point.y - walletDrag.y;
+  if (!walletDrag.moved && Math.hypot(dx, dy) < 3) return;
+  walletDrag.moved = true;
+  event.preventDefault();
+  const base = walletDrag.view;
+  const next = { ...base };
+  const pad = WALLET_PAD;
+  const plotW = CHART.width - pad.l - pad.r;
+  const plotH = CHART.height - pad.t - pad.b;
+  if (walletDrag.axis !== "y") {
+    const timePerPx = (base.maxT - base.minT) / plotW;
+    [next.minT, next.maxT] = shiftSpan(base.minT, base.maxT, -dx * timePerPx, extent.minT, extent.maxT);
+  }
+  if (walletDrag.axis !== "x") {
+    const capPerPx = (base.maxY - base.minY) / plotH;
+    [next.minY, next.maxY] = shiftSpan(base.minY, base.maxY, dy * capPerPx, extent.minY, extent.maxY);
+  }
+  state.walletChart.view = sameRange(next, extent) ? null : next;
+  document.body.classList.add("chart-panning");
+  scheduleWalletPaint();
+}
+
+function onWalletPointerUp(event) {
+  if (!walletDrag || event.pointerId !== walletDrag.pointerId) return;
+  walletDrag = null;
+  document.body.classList.remove("chart-panning");
+  document.querySelector("#wallet-chart .wallet-plot")?.classList.remove("is-panning");
+}
+
+function onWalletHover(event) {
+  const tip = document.querySelector("#wallet-chart .chart-tip");
+  if (!tip || walletDrag?.moved) {
+    if (tip) tip.hidden = true;
+    return;
+  }
+  const point = event.target.closest?.(".wallet-point");
+  if (!point) {
+    if (!event.target.closest?.(".chart-tip")) tip.hidden = true;
+    return;
+  }
+  const trade = (state.walletChart?.trades || []).find((item) => String(item.id) === String(point.dataset.id));
+  if (!trade) return;
+  tip.hidden = false;
+  tip.innerHTML = walletTipHtml(trade);
+  const stage = document.querySelector("#wallet-chart .chart-stage");
+  if (!stage) return;
+  const box = point.getBoundingClientRect();
+  const host = stage.getBoundingClientRect();
+  const tipBox = tip.getBoundingClientRect();
+  let left = box.right - host.left + 10;
+  let top = box.top - host.top - 6;
+  if (left + tipBox.width > host.width - 8) left = box.left - host.left - tipBox.width - 10;
+  if (top + tipBox.height > host.height - 8) top = Math.max(8, host.height - tipBox.height - 8);
+  tip.style.left = `${Math.max(8, left)}px`;
+  tip.style.top = `${Math.max(8, top)}px`;
+}
+
+async function loadWalletChart(id) {
+  try {
+    const body = await api(`/api/buyers/${id}/trades`);
+    if (!state.walletChart || String(state.walletChart.buyer?.id) !== String(id)) return;
+    state.walletChart = { buyer: body.buyer, trades: body.trades || [], loading: false, error: "", view: null };
+    paintWalletChart();
+  } catch (error) {
+    if (!state.walletChart || String(state.walletChart.buyer?.id) !== String(id)) return;
+    state.walletChart = { buyer: state.walletChart.buyer, trades: [], loading: false, error: error.message, view: null };
+    paintWalletChart();
+  }
 }
 
 function paintBuyerChart() {
@@ -2851,6 +3367,7 @@ async function loadBuyerChart(address) {
 }
 
 function onChartHover(event) {
+  if (event.target.closest?.("#wallet-chart")) return onWalletHover(event);
   const tip = document.querySelector("#buyer-chart .chart-tip");
   if (!tip || !state.buyerChart?.rows || chartDrag?.moved) {
     if (tip && chartDrag?.moved) tip.hidden = true;
@@ -3098,6 +3615,37 @@ function onInput(event) {
     paintRealBuyers();
     return;
   }
+  if (event.target.dataset.act === "wallet-part") {
+    const input = event.target;
+    const max = Number(input.dataset.max) || 59;
+    const digits = input.value.replace(/\D/g, "").slice(0, 2);
+    input.value = digits && Number(digits) > max ? String(max) : digits;
+    const picker = input.closest(".picker");
+    const key = picker?.dataset.key === "end" ? "end" : "start";
+    const parts = [...(picker?.querySelectorAll("[data-act=wallet-part]") || [])].map((node) => Number(node.value) || 0);
+    const selected = unixParts(state.walletFilter[key]);
+    const date = selected?.date || "";
+    const clock = parts.map((part) => pad2(part)).join(":");
+    const label = picker?.querySelector(".picker-clock-label");
+    if (label && date) label.textContent = clock;
+    if (date) {
+      state.walletFilter[key] = partsToUnix(date, parts[0], parts[1], parts[2]);
+      if (state.walletChart) state.walletChart.view = null;
+      syncWalletChart();
+    }
+    return;
+  }
+  if (event.target.dataset.act === "wallet-query" || event.target.dataset.act === "wallet-min" || event.target.dataset.act === "wallet-max") {
+    const act = event.target.dataset.act;
+    const key = act === "wallet-query" ? "query" : act === "wallet-min" ? "minEth" : "maxEth";
+    let value = event.target.value;
+    if (key !== "query") value = value.replace(/[^\d.]/g, "").replace(/(\..*)\./g, "$1");
+    state.walletFilter[key] = value;
+    if (value !== event.target.value) event.target.value = value;
+    if (state.walletChart) state.walletChart.view = null;
+    syncWalletChart();
+    return;
+  }
   if (event.target.dataset.act === "trade-buyer") {
     state.tradeFilter.address = event.target.value.trim();
     resetTradeView();
@@ -3253,6 +3801,12 @@ async function runConfirm() {
 }
 
 async function onClick(event) {
+  if (event.target.classList?.contains("wallet-back")) {
+    state.walletChart = null;
+    state.walletPicker = null;
+    paintWalletChart();
+    return;
+  }
   if (event.target.classList?.contains("chart-back")) {
     state.buyerChart = null;
     paintBuyerChart();
@@ -3283,10 +3837,15 @@ async function onClick(event) {
       state.forceView = false;
     }
   }
+  if (state.walletPicker && !event.target.closest("#wallet-chart .picker")) {
+    state.walletPicker = null;
+    paintWalletChart();
+  }
   if (!button) return;
   const act = button.dataset.act;
   if (act === "real-from" || act === "real-to" || act === "real-from-unit" || act === "real-to-unit") return;
   if (act === "trade-address" || act === "trade-min" || act === "trade-max" || act === "trade-buyer") return;
+  if (act === "wallet-query" || act === "wallet-min" || act === "wallet-max" || act === "wallet-part") return;
   if (act === "trade-side") {
     const side = button.dataset.side;
     state.tradeFilter.side = side === "buy" || side === "sell" ? side : "all";
@@ -3328,6 +3887,77 @@ async function onClick(event) {
   if (act === "close-chart") {
     state.buyerChart = null;
     paintBuyerChart();
+    return;
+  }
+  if (act === "close-wallet") {
+    state.walletChart = null;
+    state.walletPicker = null;
+    paintWalletChart();
+    return;
+  }
+  if (act === "wallet-chart") {
+    const buyer = (state.data?.buyers || []).find((item) => String(item.id) === String(button.dataset.id));
+    if (!buyer) return;
+    state.walletFilter = emptyWalletFilter();
+    state.walletAxis = "amount";
+    state.walletPicker = null;
+    state.walletChart = { buyer, trades: [], loading: true, error: "", view: null };
+    paintWalletChart();
+    loadWalletChart(buyer.id);
+    return;
+  }
+  if (act === "wallet-side") {
+    const side = button.dataset.side;
+    state.walletFilter.side = side === "buy" || side === "sell" ? side : "all";
+    if (state.walletChart) state.walletChart.view = null;
+    syncWalletChart();
+    return;
+  }
+  if (act === "wallet-axis") {
+    state.walletAxis = button.dataset.axis === "mcap" ? "mcap" : "amount";
+    if (state.walletChart) state.walletChart.view = null;
+    paintWalletChart();
+    return;
+  }
+  if (act === "wallet-open") {
+    const key = button.dataset.key === "end" ? "end" : "start";
+    const same = state.walletPicker?.key === key;
+    if (same) state.walletPicker = null;
+    else {
+      const parts = unixParts(state.walletFilter[key]);
+      state.walletPicker = { key, month: String(parts?.date || zonedToday()).slice(0, 7) };
+    }
+    paintWalletChart();
+    return;
+  }
+  if (act === "wallet-month") {
+    if (state.walletPicker?.key !== button.dataset.key) return;
+    state.walletPicker.month = shiftMonth(state.walletPicker.month, Number(button.dataset.delta) || 0);
+    paintWalletChart();
+    return;
+  }
+  if (act === "wallet-day") {
+    const key = button.dataset.key === "end" ? "end" : "start";
+    const picker = button.closest(".picker");
+    const parts = [...(picker?.querySelectorAll("[data-act=wallet-part]") || [])].map((node) => Number(node.value) || 0);
+    state.walletFilter[key] = partsToUnix(button.dataset.day, parts[0], parts[1], parts[2]);
+    if (state.walletChart) state.walletChart.view = null;
+    paintWalletChart();
+    return;
+  }
+  if (act === "wallet-clear") {
+    const key = button.dataset.key === "end" ? "end" : "start";
+    state.walletFilter[key] = "";
+    if (state.walletChart) state.walletChart.view = null;
+    paintWalletChart();
+    return;
+  }
+  if (act === "wallet-now") {
+    state.walletFilter.end = Math.floor(Date.now() / 1000);
+    if (state.walletChart) state.walletChart.view = null;
+    const parts = unixParts(state.walletFilter.end);
+    state.walletPicker = { key: "end", month: String(parts.date).slice(0, 7) };
+    paintWalletChart();
     return;
   }
   if (act === "buyer-chart") {
@@ -3754,6 +4384,16 @@ window.addEventListener("hashchange", () => {
 
 window.addEventListener("keydown", (event) => {
   if (event.key !== "Escape") return;
+  if (state.walletPicker) {
+    state.walletPicker = null;
+    paintWalletChart();
+    return;
+  }
+  if (state.walletChart) {
+    state.walletChart = null;
+    paintWalletChart();
+    return;
+  }
   if (state.picker) {
     state.picker = null;
     state.forceView = true;

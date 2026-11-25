@@ -9,6 +9,7 @@ import {
   deployerDetail,
   getBuyer,
   getCompetitor,
+  listBuyerTradesByBuyer,
   getSettings,
   listCompetitors,
   listTokenAddresses,
@@ -170,6 +171,12 @@ app.patch("/api/buyers/:id", (req, res) => {
     }
     res.status(500).json({ error: error.message });
   }
+});
+
+app.get("/api/buyers/:id/trades", (req, res) => {
+  const buyer = getBuyer(Number(req.params.id));
+  if (!buyer) return res.status(404).json({ error: "Buyer not found." });
+  res.json({ buyer, trades: listBuyerTradesByBuyer(buyer.id) });
 });
 
 app.delete("/api/buyers/:id", (req, res) => {
