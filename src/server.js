@@ -65,7 +65,9 @@ app.get("/api/tokens/:address/real-buyers", async (req, res) => {
   const address = normalizeAddress(req.params.address);
   if (!address) return res.status(400).json({ error: "Enter a valid token address." });
   try {
-    const trades = await realBuyerTrades(address);
+    req.setTimeout(0);
+    res.setTimeout(0);
+    const trades = await realBuyerTrades(address, { fresh: req.query.fresh === "1" });
     if (!trades) return res.status(404).json({ error: "That token is not in the tracker yet." });
     res.json(trades);
   } catch (error) {

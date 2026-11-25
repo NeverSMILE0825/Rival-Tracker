@@ -2299,6 +2299,24 @@ function paintRealBuyers() {
   }
 }
 
+async function fetchRealBuyerPayload(address) {
+  let best = null;
+  let lastError = null;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const response = await fetch(`/api/tokens/${address}/real-buyers${attempt ? "?fresh=1" : ""}`);
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.error || "Real buyers could not be loaded.");
+      best = body;
+      if (body.complete !== false) return body;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  if (best) return best;
+  throw lastError || new Error("Real buyers could not be loaded.");
+}
+
 async function loadRealBuyers(address) {
   const stop = watchBuyerProgress(address, (percent, label) => {
     if (!state.realBuyers || state.realBuyers.address !== address || !state.realBuyers.loading) return;
@@ -2308,9 +2326,7 @@ async function loadRealBuyers(address) {
     paintRealBuyers();
   });
   try {
-    const response = await fetch(`/api/tokens/${address}/real-buyers`);
-    const body = await response.json();
-    if (!response.ok) throw new Error(body.error || "Real buyers could not be loaded.");
+    const body = await fetchRealBuyerPayload(address);
     if (!state.realBuyers || state.realBuyers.address !== address) return;
     const ordered = [...(body.rows || [])].sort((a, b) => (Number(a.time) || Number(a.block) || 0) - (Number(b.time) || Number(b.block) || 0) || String(a.tx).localeCompare(String(b.tx)));
     const known = (state.data?.tokens || []).find((item) => item.address === address);
@@ -3370,9 +3386,7 @@ async function loadBuyerChart(address) {
     paintBuyerChart();
   });
   try {
-    const response = await fetch(`/api/tokens/${address}/real-buyers`);
-    const body = await response.json();
-    if (!response.ok) throw new Error(body.error || "Real buyers could not be loaded.");
+    const body = await fetchRealBuyerPayload(address);
     if (!state.buyerChart || state.buyerChart.address !== address) return;
     const ordered = [...(body.rows || [])].sort((a, b) => (Number(a.time) || Number(a.block) || 0) - (Number(b.time) || Number(b.block) || 0) || String(a.tx).localeCompare(String(b.tx)));
     state.buyerChart = {

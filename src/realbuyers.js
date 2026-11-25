@@ -1,45 +1,47 @@
-import https from "node:https";
 import { getToken, listBuyerPairs, listTokenSwaps, mainTokenPair } from "./db.js";
 import { teamAddresses } from "./profit.js";
-import { ethToWei } from "./util.js";
+import { ethToWei, sleep } from "./util.js";
 
 const cache = new Map();
 let ethQuote = { at: 0, usd: 0 };
 
-function getJson(url, headers = {}) {
-  return new Promise((resolve, reject) => {
-    const request = https.get(
-      url,
-      {
+const RETRYABLE = new Set([403, 408, 425, 429, 500, 502, 503, 504]);
+
+async function getJson(url, headers = {}, onRetry) {
+  let lastError = new Error("Dextools request failed");
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    try {
+      const response = await fetch(url, {
         headers: {
           accept: "application/json",
           "accept-encoding": "identity",
-          connection: "close",
           referer: "https://www.dextools.io/app/ether/pair-explorer",
           ...headers,
         },
-        timeout: 12000,
-      },
-      (response) => {
-        const chunks = [];
-        response.on("data", (chunk) => chunks.push(chunk));
-        response.on("end", () => {
-          const text = Buffer.concat(chunks).toString("utf8");
-          if (response.statusCode < 200 || response.statusCode >= 300) {
-            reject(new Error(`Dextools HTTP ${response.statusCode}`));
-            return;
-          }
-          try {
-            resolve(JSON.parse(text));
-          } catch {
-            reject(new Error("Dextools returned invalid JSON"));
-          }
-        });
-      },
-    );
-    request.on("timeout", () => request.destroy(new Error("Dextools timeout")));
-    request.on("error", reject);
-  });
+        signal: AbortSignal.timeout(12000),
+      });
+      if (RETRYABLE.has(response.status)) {
+        lastError = new Error(`Dextools HTTP ${response.status}`);
+        if (attempt === 3) break;
+        onRetry?.(lastError);
+        await sleep(500 * (attempt + 1));
+        continue;
+      }
+      if (!response.ok) {
+        const error = new Error(`Dextools HTTP ${response.status}`);
+        error.permanent = response.status < 500;
+        throw error;
+      }
+      return await response.json();
+    } catch (error) {
+      if (error?.permanent) throw error;
+      lastError = error;
+      if (attempt === 3) break;
+      onRetry?.(error);
+      await sleep(400 * (attempt + 1));
+    }
+  }
+  throw lastError;
 }
 
 function realSwaps(token, createdBlock) {
@@ -172,40 +174,72 @@ async function tokenSupply(token) {
   return null;
 }
 
-async function pairEvents(pair, onPage) {
+async function mapLimited(items, limit, worker) {
+  const results = new Array(items.length);
+  let next = 0;
+  const runners = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (next < items.length) {
+      const index = next;
+      next += 1;
+      results[index] = await worker(items[index], index);
+    }
+  });
+  await Promise.all(runners);
+  return results;
+}
+
+async function pairEvents(pair, onPage, needed, oldestBlock) {
   const events = [];
   const seen = new Set();
   let cursor = null;
   let fetched = 0;
   for (let page = 0; page < 300; page += 1) {
+    if (needed?.size === 0) {
+      onPage?.(fetched, true);
+      break;
+    }
     const parts = ["limit=100"];
     if (cursor) {
       for (const [key, value] of Object.entries(cursor)) {
-        if (value != null) parts.push(`${key}=${value}`);
+        if (value != null) parts.push(`${encodeURIComponent(key)}=${encodeURIComponent(value)}`);
       }
     }
     const direction = cursor ? "desc" : "newest";
-    const body = await getJson(`https://www.dextools.io/api/core/pool/events/ether/${pair}/${direction}?${parts.join("&")}`, {
-      "X-API-Version": "2",
-    });
+    let body;
+    try {
+      body = await getJson(
+        `https://www.dextools.io/api/core/pool/events/ether/${pair}/${direction}?${parts.join("&")}`,
+        { "X-API-Version": "2" },
+        () => onPage?.(fetched, false, "Retrying pool trades"),
+      );
+    } catch (error) {
+      console.error("real buyers", pair, error.message);
+      onPage?.(fetched, true);
+      return { events, complete: Boolean(error?.permanent) && fetched === 0 };
+    }
     const data = body?.data || {};
     let added = 0;
+    let oldestOnPage = Infinity;
     for (const event of data.events || []) {
+      const block = Number(event.blockNumber || event.block) || 0;
+      if (block > 0) oldestOnPage = Math.min(oldestOnPage, block);
       const id = String(event.id || "").toLowerCase();
       if (!/^0x[a-f0-9]{64}$/.test(id) || seen.has(id)) continue;
       seen.add(id);
       events.push(event);
       added += 1;
+      needed?.delete(id);
     }
     fetched += 1;
     const next = data.next;
     const repeated = cursor && next && next.blockNumber === cursor.blockNumber && next.logIndex === cursor.logIndex;
-    const more = Boolean(next) && added > 0 && !repeated;
+    const olderThanSwaps = Boolean(oldestBlock) && oldestOnPage < oldestBlock;
+    const more = Boolean(next) && added > 0 && !repeated && needed?.size !== 0 && !olderThanSwaps;
     onPage?.(fetched, !more);
     if (!more) break;
     cursor = next;
   }
-  return events;
+  return { events, complete: true };
 }
 
 const buyerProgress = new Map();
@@ -239,6 +273,9 @@ async function loadRealBuyerTrades(token, saved) {
   const swaps = realSwaps(token, saved.created_block);
   const ready = Boolean(saved.profit_checked_at);
   const pairs = listBuyerPairs(token);
+  const needed = new Set(swaps.map((swap) => String(swap.tx_hash || "").toLowerCase()).filter((hash) => /^0x[a-f0-9]{64}$/.test(hash)));
+  const blocks = swaps.map((swap) => Number(swap.block_number) || 0).filter((block) => block > 0);
+  const oldestBlock = blocks.length ? Math.min(...blocks) : 0;
   const tracker = {
     parts: pairs.map((pair) => ({ done: 0, total: Math.max(1, Math.ceil(pair.txns / 100)) })),
     extraDone: 0,
@@ -250,6 +287,7 @@ async function loadRealBuyerTrades(token, saved) {
   const makerCount = new Map();
   let supply = null;
   let chart = [];
+  let complete = false;
   try {
     const supplyPromise = tokenSupply(token)
       .then((value) => {
@@ -275,16 +313,22 @@ async function loadRealBuyerTrades(token, saved) {
           return [];
         }),
     );
-    const lists = await Promise.all(
-      pairs.map((pair, index) =>
-        pairEvents(pair.address, (used, finished) => advancePair(token, tracker, index, used, finished, "Fetching pool trades")).catch(() => {
-          advancePair(token, tracker, index, tracker.parts[index].total, true, "Fetching pool trades");
-          return [];
-        }),
-      ),
+    const lists = await mapLimited(pairs, 2, (pair, index) =>
+      pairEvents(
+        pair.address,
+        (used, finished, label) => advancePair(token, tracker, index, used, finished, label || "Fetching pool trades"),
+        needed,
+        oldestBlock,
+      ).catch((error) => {
+        console.error("real buyers", pair.address, error.message);
+        advancePair(token, tracker, index, tracker.parts[index].total, true, "Fetching pool trades");
+        return { events: [], complete: false };
+      }),
     );
-    for (const events of lists) {
-      for (const event of events) {
+    complete = true;
+    for (const result of lists) {
+      if (!result?.complete) complete = false;
+      for (const event of result?.events || []) {
         const id = String(event.id || "").toLowerCase();
         const type = String(event.type || "").toLowerCase();
         if (type === "buy" || type === "sell" || type === "add" || type === "remove") {
@@ -330,18 +374,19 @@ async function loadRealBuyerTrades(token, saved) {
       }
     }
   }
-  const value = { ready, symbol: saved.symbol || "", name: saved.name || "", rows, chart };
-  cache.set(token, { at: Date.now(), ready: ready && rows.length > 0, value });
+  const value = { ready: ready && complete && rows.length > 0, complete, symbol: saved.symbol || "", name: saved.name || "", rows, chart };
+  cache.set(token, { at: Date.now(), ready: value.ready, complete, value });
   buyerProgress.set(token, { percent: 100, label: "Ready" });
   return value;
 }
 
-export async function realBuyerTrades(address) {
+export async function realBuyerTrades(address, options = {}) {
   const token = String(address || "").toLowerCase();
   const saved = getToken(token);
   if (!saved) return null;
   const cached = cache.get(token);
-  if (cached && Date.now() - cached.at < (cached.ready ? 60_000 : 15_000)) {
+  const ttl = cached?.complete ? (cached.ready ? 60_000 : 15_000) : 10_000;
+  if (!options.fresh && cached && Date.now() - cached.at < ttl) {
     buyerProgress.set(token, { percent: 100, label: "Ready" });
     return cached.value;
   }
