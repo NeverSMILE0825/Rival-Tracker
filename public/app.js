@@ -28,6 +28,8 @@ const state = {
   buyerChart: null,
   realPageSize: 25,
   realSpan: { from: "", fromUnit: "m", to: "", toUnit: "h" },
+  tradeFilter: { address: "", side: "all", minEth: "", maxEth: "" },
+  chartAxis: "mcap",
 };
 
 const TITLES = {
@@ -1900,6 +1902,81 @@ const REAL_WINDOWS = [
   ["24h", "First 24h", 24 * 60 * 60],
 ];
 
+function ethToWeiFilter(value) {
+  const text = String(value ?? "").trim();
+  if (!text || text === ".") return null;
+  if (!/^\d*\.?\d*$/.test(text)) return null;
+  const [whole = "0", frac = ""] = text.split(".");
+  if (!whole && !frac) return null;
+  const digits = `${whole || "0"}${frac.padEnd(18, "0").slice(0, 18)}`.replace(/^0+/, "") || "0";
+  try {
+    return BigInt(digits);
+  } catch {
+    return null;
+  }
+}
+
+function rowAmountWei(row) {
+  try {
+    return BigInt(row.amountWei || "0");
+  } catch {
+    return 0n;
+  }
+}
+
+function filterRangeError() {
+  const min = ethToWeiFilter(state.tradeFilter.minEth);
+  const max = ethToWeiFilter(state.tradeFilter.maxEth);
+  if (min != null && max != null && min > max) return "Min amount must be less than or equal to max amount.";
+  return "";
+}
+
+function tradeMatches(row) {
+  const filter = state.tradeFilter;
+  const address = filter.address.trim().toLowerCase();
+  if (address && !String(row.maker || "").toLowerCase().includes(address)) return false;
+  if (filter.side === "buy" && row.type !== "buy") return false;
+  if (filter.side === "sell" && row.type !== "sell") return false;
+  const min = ethToWeiFilter(filter.minEth);
+  const max = ethToWeiFilter(filter.maxEth);
+  if (min != null && max != null && min > max) return false;
+  const wei = rowAmountWei(row);
+  if (min != null && wei < min) return false;
+  if (max != null && wei > max) return false;
+  return true;
+}
+
+function filteredTrades(rows) {
+  return (rows || []).filter((row) => tradeMatches(row));
+}
+
+function resetTradeView() {
+  state.pages.realBuyers = 1;
+  if (state.buyerChart) state.buyerChart.view = null;
+}
+
+function tradeFilterBar(rows, { axis = false } = {}) {
+  const filter = state.tradeFilter;
+  const side = (id, label) => `<button type="button" class="chip ${filter.side === id ? "on" : ""}" data-act="trade-side" data-side="${id}">${label}</button>`;
+  const matched = filterRangeError() ? 0 : filteredTrades(rows).length;
+  const axisMode = state.chartAxis === "amount" ? "amount" : "mcap";
+  const axisField = axis
+    ? `<div class="trade-field"><span>Y axis</span><div class="chips">
+        <button type="button" class="chip ${axisMode === "mcap" ? "on" : ""}" data-act="chart-axis" data-axis="mcap">M. Cap</button>
+        <button type="button" class="chip ${axisMode === "amount" ? "on" : ""}" data-act="chart-axis" data-axis="amount">Amount</button>
+      </div></div>`
+    : "";
+  const note = filterRangeError() || `${matched.toLocaleString()} of ${(rows || []).length.toLocaleString()} trades`;
+  return `<div class="trade-filters">
+    <label class="trade-field trade-address"><span>Address</span><input data-act="trade-address" placeholder="Maker address" spellcheck="false" value="${esc(filter.address)}" /></label>
+    <div class="trade-field"><span>Side</span><div class="chips">${side("all", "All")}${side("buy", "Only buy")}${side("sell", "Only sell")}</div></div>
+    <label class="trade-field"><span>Min amount</span><input data-act="trade-min" inputmode="decimal" placeholder="ETH" value="${esc(filter.minEth)}" /></label>
+    <label class="trade-field"><span>Max amount</span><input data-act="trade-max" inputmode="decimal" placeholder="ETH" value="${esc(filter.maxEth)}" /></label>
+    ${axisField}
+    <p class="muted trade-note">${esc(note)}</p>
+  </div>`;
+}
+
 function realLaunch(ledger) {
   const token = (state.data?.tokens || []).find((item) => item.address === ledger.address);
   return Number(token?.created_at) || Number(ledger.launchedAt) || 0;
@@ -1992,7 +2069,7 @@ function realProfitBar(rows, launch) {
   return `<div class="profit-windows" aria-label="Profit after launch">${cards}${customProfitCard(rows, launch)}</div>`;
 }
 
-function realBuyerTable(rows) {
+function realBuyerTable(rows, emptyText = "No real buyer trades yet.") {
   const columns = [
     { label: "No", key: "no", type: "number" },
     { label: `Time (${zoneLabel()})`, key: "time", type: "number" },
@@ -2033,7 +2110,7 @@ function realBuyerTable(rows) {
     <div class="table-scroll">
       <table>
         <thead><tr>${columns.map(realHeader).join("")}</tr></thead>
-        <tbody>${body || `<tr><td colspan="8" class="muted">No real buyer trades yet.</td></tr>`}</tbody>
+        <tbody>${body || `<tr><td colspan="8" class="muted">${esc(emptyText)}</td></tr>`}</tbody>
       </table>
     </div>
     ${realPager({ rows: slice, page, pages, start, count: sorted.length, size })}
@@ -2086,6 +2163,7 @@ function paintRealBuyers() {
     rows: ledger.rows || [],
     launch: realLaunch(ledger),
     span: state.realSpan,
+    filter: state.tradeFilter,
     sort: state.sort.realBuyers,
     page: state.pages.realBuyers,
     size: state.realPageSize,
@@ -2113,12 +2191,16 @@ function paintRealBuyers() {
       : partial
         ? `<p class="muted buyers-note">Some trades are still being counted. The rows below are the ones finished so far.</p>`
         : "";
-  const table = ledger.loading || ledger.error || waiting ? "" : realBuyerTable(ledger.rows || []);
-  const windows = ledger.loading || ledger.error || waiting ? "" : realProfitBar(ledger.rows || [], realLaunch(ledger));
-  const body = ledger.loading ? fetchProgress(ledger.progress, ledger.progressLabel) : `${note}${windows}${table}`;
+  const source = ledger.rows || [];
+  const matched = filterRangeError() ? [] : filteredTrades(source);
+  const emptyText = filterRangeError() || (source.length ? "No trades match these filters." : "No real buyer trades yet.");
+  const table = ledger.loading || ledger.error || waiting ? "" : realBuyerTable(matched, emptyText);
+  const windows = ledger.loading || ledger.error || waiting ? "" : realProfitBar(matched, realLaunch(ledger));
+  const filters = ledger.loading || ledger.error || waiting ? "" : tradeFilterBar(source);
+  const body = ledger.loading ? fetchProgress(ledger.progress, ledger.progressLabel) : `${note}${filters}${windows}${table}`;
   root.innerHTML = `<div class="buyers-back"><section class="buyers-modal" role="dialog" aria-modal="true" aria-label="Real buyers">
     <div class="buyers-head">
-      <div><h3>Real buyers · ${esc(title)}</h3><p class="muted">Every buy and sell that is not a team transaction. The figures are profit after the launch time.</p></div>
+      <div><h3>Real buyers · ${esc(title)}</h3><p class="muted">Every buy and sell that is not a team transaction. Filters apply to the table and the profit windows.</p></div>
       <button class="icon-close" data-act="close-real" aria-label="Close">×</button>
     </div>
     ${body}
@@ -2218,11 +2300,29 @@ function chartTipHtml(row) {
 
 const CHART = { width: 1000, height: 520, pad: { l: 78, r: 46, t: 16, b: 46 } };
 
+function chartAxis() {
+  return state.chartAxis === "amount" ? "amount" : "mcap";
+}
+
+function chartPad() {
+  return chartAxis() === "amount" ? { l: 96, r: 46, t: 16, b: 46 } : CHART.pad;
+}
+
+function chartYValue(row) {
+  if (chartAxis() === "amount") {
+    const wei = rowAmountWei(row);
+    if (wei <= 0n) return 0;
+    return Number(wei) / 1e18;
+  }
+  return Number(row.mcap) > 0 ? Number(row.mcap) : 0;
+}
+
 function chartPlotted(rows) {
   const plotted = [];
   rows.forEach((row, index) => {
-    if (!row.time || !(Number(row.mcap) > 0)) return;
-    plotted.push({ row, index });
+    const y = chartYValue(row);
+    if (!row.time || !(y > 0)) return;
+    plotted.push({ row, index, y });
   });
   return plotted;
 }
@@ -2232,16 +2332,18 @@ function chartExtent(rows, candles = []) {
   const caps = [];
   for (const item of chartPlotted(rows)) {
     times.push(item.row.time);
-    caps.push(Number(item.row.mcap));
+    caps.push(item.y);
   }
-  for (const candle of candles) {
-    const time = Number(candle.time);
-    const mcap = Number(candle.mcap);
-    if (time > 0 && mcap > 0) {
-      times.push(time);
-      caps.push(mcap);
-      if (Number(candle.high) > 0) caps.push(Number(candle.high));
-      if (Number(candle.low) > 0) caps.push(Number(candle.low));
+  if (chartAxis() !== "amount") {
+    for (const candle of candles) {
+      const time = Number(candle.time);
+      const mcap = Number(candle.mcap);
+      if (time > 0 && mcap > 0) {
+        times.push(time);
+        caps.push(mcap);
+        if (Number(candle.high) > 0) caps.push(Number(candle.high));
+        if (Number(candle.low) > 0) caps.push(Number(candle.low));
+      }
     }
   }
   if (!times.length) return null;
@@ -2336,6 +2438,14 @@ function wheelPixels(event) {
   return Number.isFinite(delta) ? delta : 0;
 }
 
+function chartYLabel(value, span) {
+  if (chartAxis() === "amount") {
+    const digits = span < 0.05 ? 4 : span < 1 ? 3 : span < 20 ? 2 : 1;
+    return `${Number(value).toLocaleString("en-US", { maximumFractionDigits: digits, minimumFractionDigits: 0 })}`;
+  }
+  return chartUsd(value, span);
+}
+
 function chartUsd(value, span) {
   if (span >= 1000) return formatUsd(value);
   const digits = span < 20 ? 2 : span < 200 ? 1 : 0;
@@ -2367,10 +2477,14 @@ function tokenChartPaths(candles, xOf, yOf) {
 function buyerChartSvg(rows, view, candles = []) {
   const width = CHART.width;
   const height = CHART.height;
-  const pad = CHART.pad;
+  const pad = chartPad();
+  const amount = chartAxis() === "amount";
   const plotted = chartPlotted(rows);
   const extent = chartExtent(rows, candles);
-  if (!extent) return `<p class="muted buyers-note">No real buyer trade has a time and market cap yet.</p>`;
+  if (!extent) {
+    const why = amount ? "No matching trade has a time and an ETH amount yet." : "No matching trade has a time and a market cap yet.";
+    return `<p class="muted buyers-note">${why}</p>`;
+  }
   const domain = chartView(view, extent);
   let { minT, maxT, minY, maxY } = domain;
   if (!(maxT > minT)) {
@@ -2382,7 +2496,7 @@ function buyerChartSvg(rows, view, candles = []) {
     maxY = extent.maxY;
   }
   const xOf = (time) => pad.l + ((time - minT) / (maxT - minT)) * (width - pad.l - pad.r);
-  const yOf = (mcap) => pad.t + (1 - (mcap - minY) / (maxY - minY)) * (height - pad.t - pad.b);
+  const yOf = (value) => pad.t + (1 - (value - minY) / (maxY - minY)) * (height - pad.t - pad.b);
   const yTicks = [0, 1, 2, 3, 4].map((step) => minY + ((maxY - minY) * step) / 4);
   const xTicks = [0, 1, 2, 3].map((step) => minT + ((maxT - minT) * step) / 3);
   const ySpan = maxY - minY;
@@ -2390,7 +2504,7 @@ function buyerChartSvg(rows, view, candles = []) {
   const grid = yTicks
     .map((tick) => {
       const y = yOf(tick);
-      return `<line x1="${pad.l}" y1="${y}" x2="${width - pad.r}" y2="${y}" class="chart-grid"/><text x="${pad.l - 8}" y="${y + 4}" text-anchor="end" class="chart-label">${esc(chartUsd(tick, ySpan))}</text>`;
+      return `<line x1="${pad.l}" y1="${y}" x2="${width - pad.r}" y2="${y}" class="chart-grid"/><text x="${pad.l - 8}" y="${y + 4}" text-anchor="end" class="chart-label">${esc(chartYLabel(tick, ySpan))}</text>`;
     })
     .join("");
   const xLabels = xTicks
@@ -2410,7 +2524,7 @@ function buyerChartSvg(rows, view, candles = []) {
       const heightPx = 22;
       const widthPx = heightPx * (animal.w / animal.h);
       const cx = xOf(item.row.time);
-      const cy = yOf(Number(item.row.mcap));
+      const cy = yOf(item.y);
       const side = item.row.type === "sell" ? "sell" : "buy";
       return `<g class="chart-point" data-index="${item.index}">
         <circle class="chart-ring ${side}" cx="${cx}" cy="${cy}" r="16.5"/>
@@ -2420,17 +2534,19 @@ function buyerChartSvg(rows, view, candles = []) {
     .join("");
   const plotW = width - pad.l - pad.r;
   const plotH = height - pad.t - pad.b;
-  return `<svg class="buyer-chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="Real buyer trades by time and market cap">
+  const axisName = amount ? "Amount (ETH)" : "M. Cap";
+  const line = amount ? "" : tokenChartPaths(candles, xOf, yOf);
+  return `<svg class="buyer-chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="Real buyer trades by time and ${amount ? "amount" : "market cap"}">
     <defs>${symbols}<clipPath id="chart-plot"><rect x="${pad.l}" y="${pad.t}" width="${plotW}" height="${plotH}"/></clipPath></defs>
     <rect class="chart-zoom-y" x="0" y="0" width="${pad.l - 8}" height="${height}"/>
     <rect class="chart-zoom-x" x="${pad.l - 8}" y="0" width="${width - pad.l + 8}" height="${height}"/>
     ${grid}
     ${xLabels}
     <text x="${(pad.l + width - pad.r) / 2}" y="${height - 2}" text-anchor="middle" class="chart-axis">Time (${esc(zoneLabel())})</text>
-    <text x="16" y="${(pad.t + height - pad.b) / 2}" text-anchor="middle" class="chart-axis" transform="rotate(-90 16 ${(pad.t + height - pad.b) / 2})">M. Cap</text>
+    <text x="16" y="${(pad.t + height - pad.b) / 2}" text-anchor="middle" class="chart-axis" transform="rotate(-90 16 ${(pad.t + height - pad.b) / 2})">${esc(axisName)}</text>
     <line x1="${pad.l}" y1="${pad.t}" x2="${pad.l}" y2="${height - pad.b}" class="chart-axis-line"/>
     <line x1="${pad.l}" y1="${height - pad.b}" x2="${width - pad.r}" y2="${height - pad.b}" class="chart-axis-line"/>
-    <g clip-path="url(#chart-plot)">${tokenChartPaths(candles, xOf, yOf)}${marks}</g>
+    <g clip-path="url(#chart-plot)">${line}${marks}</g>
   </svg>`;
 }
 
@@ -2455,7 +2571,8 @@ function onChartWheel(event) {
   const svg = chartRoot?.querySelector(".buyer-chart");
   const overPlot = event.target.closest?.(".chart-stage, .buyer-chart");
   if (!svg || !overPlot || !state.buyerChart?.rows?.length) return;
-  const extent = chartExtent(state.buyerChart.rows, state.buyerChart.candles || []);
+  const rows = filteredTrades(state.buyerChart.rows);
+  const extent = chartExtent(rows, state.buyerChart.candles || []);
   if (!extent) return;
   const pixels = wheelPixels(event);
   if (!pixels) return;
@@ -2465,18 +2582,20 @@ function onChartWheel(event) {
   const current = chartView(state.buyerChart.view, extent);
   const point = svgPoint(event, svg);
   const next = { ...current };
-  const onPrice = point.x < CHART.pad.l - 8;
-  const onTime = !onPrice && point.y > CHART.height - CHART.pad.b;
+  const pad = chartPad();
+  const onPrice = point.x < pad.l - 8;
+  const onTime = !onPrice && point.y > CHART.height - pad.b;
   if (!onTime) {
     const span = current.maxY - current.minY || 1;
-    const ratio = Math.min(1, Math.max(0, (point.y - CHART.pad.t) / (CHART.height - CHART.pad.t - CHART.pad.b)));
+    const ratio = Math.min(1, Math.max(0, (point.y - pad.t) / (CHART.height - pad.t - pad.b)));
     const anchor = current.maxY - ratio * span;
-    const minSpan = Math.min(extent.maxY - extent.minY, Math.max((extent.maxY - extent.minY) * 0.02, 1));
+    const floor = chartAxis() === "amount" ? 0.0001 : 1;
+    const minSpan = Math.min(extent.maxY - extent.minY, Math.max((extent.maxY - extent.minY) * 0.02, floor));
     [next.minY, next.maxY] = clampSpan(current.minY, current.maxY, anchor, factor, extent.minY, extent.maxY, minSpan);
   }
   if (!onPrice) {
     const span = current.maxT - current.minT || 1;
-    const ratio = Math.min(1, Math.max(0, (point.x - CHART.pad.l) / (CHART.width - CHART.pad.l - CHART.pad.r)));
+    const ratio = Math.min(1, Math.max(0, (point.x - pad.l) / (CHART.width - pad.l - pad.r)));
     const anchor = current.minT + ratio * span;
     const minSpan = Math.min(extent.maxT - extent.minT, 45);
     [next.minT, next.maxT] = clampSpan(current.minT, current.maxT, anchor, factor, extent.minT, extent.maxT, minSpan);
@@ -2490,11 +2609,12 @@ function onChartPointerDown(event) {
   const chartRoot = event.target.closest?.("#buyer-chart");
   const svg = chartRoot?.querySelector(".buyer-chart");
   if (!svg || event.target.closest?.(".chart-tip, a, button") || !state.buyerChart?.rows?.length) return;
-  const extent = chartExtent(state.buyerChart.rows, state.buyerChart.candles || []);
+  const extent = chartExtent(filteredTrades(state.buyerChart.rows), state.buyerChart.candles || []);
   if (!extent) return;
   const point = svgPoint(event, svg);
-  const onPrice = point.x < CHART.pad.l - 8;
-  const onTime = point.y > CHART.height - CHART.pad.b && !onPrice;
+  const pad = chartPad();
+  const onPrice = point.x < pad.l - 8;
+  const onTime = point.y > CHART.height - pad.b && !onPrice;
   chartDrag = {
     pointerId: event.pointerId,
     x: point.x,
@@ -2510,7 +2630,7 @@ function onChartPointerMove(event) {
   if (!chartDrag || event.pointerId !== chartDrag.pointerId || !state.buyerChart) return;
   const svg = document.querySelector("#buyer-chart .buyer-chart");
   if (!svg) return;
-  const extent = chartExtent(state.buyerChart.rows, state.buyerChart.candles || []);
+  const extent = chartExtent(filteredTrades(state.buyerChart.rows), state.buyerChart.candles || []);
   if (!extent) return;
   const point = svgPoint(event, svg);
   const dx = point.x - chartDrag.x;
@@ -2520,8 +2640,9 @@ function onChartPointerMove(event) {
   event.preventDefault();
   const base = chartDrag.view;
   const next = { ...base };
-  const plotW = CHART.width - CHART.pad.l - CHART.pad.r;
-  const plotH = CHART.height - CHART.pad.t - CHART.pad.b;
+  const pad = chartPad();
+  const plotW = CHART.width - pad.l - pad.r;
+  const plotH = CHART.height - pad.t - pad.b;
   if (chartDrag.axis !== "y") {
     const timePerPx = (base.maxT - base.minT) / plotW;
     [next.minT, next.maxT] = shiftSpan(base.minT, base.maxT, -dx * timePerPx, extent.minT, extent.maxT);
@@ -2559,6 +2680,8 @@ function paintBuyerChart() {
     progress: chart.progress || 0,
     progressLabel: chart.progressLabel || "",
     view: chart.view || null,
+    filter: state.tradeFilter,
+    axis: chartAxis(),
   });
   if (!root) {
     root = document.createElement("div");
@@ -2566,27 +2689,47 @@ function paintBuyerChart() {
     document.body.appendChild(root);
   }
   if (root.dataset.sig === signature) return;
+  const field = document.activeElement;
+  const typing = field && root.contains(field) && field.matches("input");
+  const typingAct = typing ? field.dataset.act || "" : "";
+  const caret = typing && typeof field.selectionStart === "number" ? field.selectionStart : null;
+  const caretEnd = typing && typeof field.selectionEnd === "number" ? field.selectionEnd : null;
   root.dataset.sig = signature;
   const token = (state.data?.tokens || []).find((item) => item.address === chart.address);
   const title = token?.symbol || chart.symbol || "Token";
-  const legend = `<span class="chart-key chart-token-key"><i></i><b>Token</b><span>M. Cap</span></span>${BUYER_ANIMALS.map((animal) => `<span class="chart-key" style="color:${animal.color}">${animalMark(animal, 15)}<b>${esc(animal.label)}</b><span>${esc(animal.range)}</span></span>`).join("")}`;
+  const amount = chartAxis() === "amount";
+  const legend = `${amount ? "" : `<span class="chart-key chart-token-key"><i></i><b>Token</b><span>M. Cap</span></span>`}${BUYER_ANIMALS.map((animal) => `<span class="chart-key" style="color:${animal.color}">${animalMark(animal, 15)}<b>${esc(animal.label)}</b><span>${esc(animal.range)}</span></span>`).join("")}`;
   const note = chart.error
     ? `<p class="muted buyers-note">${esc(chart.error)}</p>`
     : !chart.ready && !chart.loading
       ? `<p class="muted buyers-note">Some trades are still being counted. The chart shows the ones finished so far.</p>`
       : "";
-  const plot = chart.loading || chart.error ? "" : buyerChartSvg(chart.rows || [], chart.view || null, chart.candles || []);
+  const rows = chart.rows || [];
+  const matched = filterRangeError() ? [] : filteredTrades(rows);
+  const plot = chart.loading || chart.error ? "" : buyerChartSvg(matched, chart.view || null, chart.candles || []);
+  const filters = chart.loading || chart.error ? "" : tradeFilterBar(rows, { axis: true });
   const body = chart.loading
     ? fetchProgress(chart.progress, chart.progressLabel)
     : `${note}<div class="chart-stage">${plot}<div class="chart-tip" hidden></div></div>`;
+  const blurb = amount
+    ? "Each icon sits at that trade's ETH amount. A green circle is a buy and a red circle is a sell. Drag the chart to move it. Scroll up to zoom in and down to zoom out."
+    : "The line is the token market cap. Each icon is a real buyer trade: a green circle is a buy and a red circle is a sell. Drag the chart to move it. Scroll up to zoom in and down to zoom out.";
   root.innerHTML = `<div class="chart-back"><section class="buyers-modal chart-modal" role="dialog" aria-modal="true" aria-label="Buyer chart">
     <div class="buyers-head">
-      <div><h3>Buyer chart · ${esc(title)}</h3><p class="muted">The line is the token market cap. Each icon is a real buyer trade: a green circle is a buy and a red circle is a sell. Drag the chart to move it. Scroll up to zoom in and down to zoom out.</p></div>
+      <div><h3>Buyer chart · ${esc(title)}</h3><p class="muted">${blurb}</p></div>
       <button class="icon-close" data-act="close-chart" aria-label="Close">×</button>
     </div>
+    ${filters}
     <div class="chart-legend">${legend}</div>
     ${body}
   </section></div>`;
+  if (typingAct) {
+    const next = root.querySelector(`[data-act="${CSS.escape(typingAct)}"]`);
+    if (next) {
+      next.focus();
+      if (caret != null && next.setSelectionRange) next.setSelectionRange(caret, caretEnd ?? caret);
+    }
+  }
 }
 
 async function loadBuyerChart(address) {
@@ -2651,7 +2794,7 @@ function onChartHover(event) {
     if (!event.target.closest?.(".chart-tip")) tip.hidden = true;
     return;
   }
-  const row = state.buyerChart.rows[Number(point.dataset.index)];
+  const row = filteredTrades(state.buyerChart.rows)[Number(point.dataset.index)];
   if (!row) return;
   tip.hidden = false;
   tip.innerHTML = chartTipHtml(row);
@@ -2888,6 +3031,18 @@ function onInput(event) {
     paintRealBuyers();
     return;
   }
+  if (event.target.dataset.act === "trade-address" || event.target.dataset.act === "trade-min" || event.target.dataset.act === "trade-max") {
+    const act = event.target.dataset.act;
+    const key = act === "trade-address" ? "address" : act === "trade-min" ? "minEth" : "maxEth";
+    let value = event.target.value;
+    if (key !== "address") value = value.replace(/[^\d.]/g, "").replace(/(\..*)\./g, "$1");
+    state.tradeFilter[key] = value;
+    if (value !== event.target.value) event.target.value = value;
+    resetTradeView();
+    paintRealBuyers();
+    paintBuyerChart();
+    return;
+  }
   if (event.target.dataset.act === "page-size") {
     const size = Number(event.target.value);
     state.pageSize = [25, 50, 100].includes(size) ? size : 50;
@@ -3059,6 +3214,21 @@ async function onClick(event) {
   if (!button) return;
   const act = button.dataset.act;
   if (act === "real-from" || act === "real-to" || act === "real-from-unit" || act === "real-to-unit") return;
+  if (act === "trade-address" || act === "trade-min" || act === "trade-max") return;
+  if (act === "trade-side") {
+    const side = button.dataset.side;
+    state.tradeFilter.side = side === "buy" || side === "sell" ? side : "all";
+    resetTradeView();
+    paintRealBuyers();
+    paintBuyerChart();
+    return;
+  }
+  if (act === "chart-axis") {
+    state.chartAxis = button.dataset.axis === "amount" ? "amount" : "mcap";
+    if (state.buyerChart) state.buyerChart.view = null;
+    paintBuyerChart();
+    return;
+  }
   if (act === "route") {
     enterRoute(button.dataset.route);
     state.query = "";
@@ -3091,6 +3261,7 @@ async function onClick(event) {
   }
   if (act === "buyer-chart") {
     const address = button.dataset.address;
+    state.tradeFilter = { address: "", side: "all", minEth: "", maxEth: "" };
     state.buyerChart = { address, loading: true, ready: false, error: "", rows: [], progress: 0, progressLabel: "Fetching pool trades" };
     paintBuyerChart();
     loadBuyerChart(address);
@@ -3103,6 +3274,7 @@ async function onClick(event) {
   }
   if (act === "real-buyers") {
     const address = button.dataset.address;
+    state.tradeFilter = { address: "", side: "all", minEth: "", maxEth: "" };
     state.realBuyers = { address, loading: true, ready: false, error: "", rows: [], progress: 0, progressLabel: "Fetching pool trades" };
     state.sort.realBuyers = { key: "time", dir: "desc" };
     state.pages.realBuyers = 1;
