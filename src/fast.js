@@ -1,6 +1,9 @@
 import https from "node:https";
-import { addEvent, getSettings, getToken, hasEvent, saveSettings } from "./db.js";
-import { ensureRivalToken, relateToken } from "./relate.js";
+import { inDetectLane, transactionLaunch } from "./chain.js";
+import { addEvent, getSettings, getToken, hasEvent, saveSettings, setTokenLaunch, tokenExists, upsertToken } from "./db.js";
+import { lookupLaunch } from "./launch.js";
+import { relateToken } from "./relate.js";
+import { watchNarrative } from "./narrative.js";
 import { notifyLaunch } from "./telegram.js";
 import { nowSec, sleep } from "./util.js";
 import { watchPaid } from "./paid.js";
@@ -13,9 +16,12 @@ const QUOTES = new Set([
   "0x6b175474e89094c44da98b954eedeac495271d0f",
 ]);
 const seenPools = new Set();
+const poolQueue = [];
+const poolQueued = new Set();
+let poolActive = 0;
 let started = false;
 
-function fetchDextools(url) {
+function fetchDextools(url, timeout = 4000) {
   return new Promise((resolve, reject) => {
     const request = https.get(
       url,
@@ -27,7 +33,7 @@ function fetchDextools(url) {
           connection: "close",
           referer: "https://www.dextools.io/app/ether/live",
         },
-        timeout: 8000,
+        timeout,
       },
       (response) => {
         const chunks = [];
@@ -113,6 +119,14 @@ async function mainV4Gate(pool, token, createdAt, siblings) {
   return "send";
 }
 
+function confirmLaunch(address) {
+  lookupLaunch(address)
+    .then((launch) => {
+      if (launch?.createdAt) setTokenLaunch(address, launch);
+    })
+    .catch((error) => console.error("launch confirm", error.message));
+}
+
 async function considerPool(pool, createdAt, siblings = []) {
   const token = launchedToken(pool);
   const pair = String(pool.address || "");
@@ -120,37 +134,64 @@ async function considerPool(pool, createdAt, siblings = []) {
   const address = token.address.toLowerCase();
   if (hasEvent("launch", address)) return "skip";
   const related = await relateToken(address);
-  if (!related) return "skip";
-  const detectedAt = nowSec();
-  const saved = await ensureRivalToken(address, related, {
-    name: token.name,
-    symbol: token.symbol,
-    createdAt,
-  });
-  if (!saved || hasEvent("launch", address)) return "skip";
+  if (!related) return "retry";
   if (isV4Pool(pool)) {
-    const gate = await mainV4Gate(pool, address, createdAt, siblings);
+    const gate = await Promise.race([
+      mainV4Gate(pool, address, createdAt, siblings),
+      sleep(4000).then(() => "retry"),
+    ]);
     if (gate === "retry") return "retry";
     if (gate !== "send") {
       console.error("fast v4 side pair", token.symbol, pair);
       return "skip";
     }
   }
+  let launchedAt = createdAt;
+  let createdBlock = 0;
+  let createdTx = "";
+  if (related.createdTx) {
+    const chain = await Promise.race([
+      transactionLaunch(related.createdTx).catch(() => null),
+      sleep(2500).then(() => null),
+    ]);
+    if (chain?.createdAt) {
+      launchedAt = chain.createdAt;
+      createdBlock = chain.createdBlock;
+      createdTx = chain.createdTx;
+    }
+  }
+  if (!token.name || !token.symbol || !launchedAt) return "retry";
+  if (!tokenExists(address)) {
+    upsertToken({
+      address,
+      deployer: related.deployer,
+      name: token.name,
+      symbol: token.symbol,
+      decimals: 18,
+      createdAt: launchedAt,
+      createdTx,
+      createdBlock,
+    });
+    void watchNarrative({ name: token.name, symbol: token.symbol, createdAt: launchedAt });
+  }
+  if (hasEvent("launch", address)) return "skip";
+  const stored = getToken(address);
+  const detectedAt = nowSec();
   addEvent({
     kind: "launch",
     competitorId: related.competitorId,
     address,
     message: `${token.symbol} launched · ${related.rival}`,
   });
-  const stored = getToken(address);
-  notifyLaunch({
+  watchPaid(address);
+  void notifyLaunch({
     fast: true,
     symbol: token.symbol,
     name: token.name,
     address,
     deployer: related.deployer,
     rival: related.rival,
-    launchedAt: Number(stored?.created_at) || createdAt,
+    launchedAt: Number(stored?.created_at) || launchedAt,
     detectedAt,
     market: {
       pairAddress: pair,
@@ -160,9 +201,26 @@ async function considerPool(pool, createdAt, siblings = []) {
       priceUsd: Number(pool.price) || null,
     },
   });
-  watchPaid(address);
+  void confirmLaunch(address);
   console.error("fast launch", token.symbol, address);
   return "send";
+}
+
+function drainPools() {
+  while (poolActive < 3 && poolQueue.length) {
+    const item = poolQueue.shift();
+    poolActive += 1;
+    inDetectLane(() => considerPool(item.pool, item.createdAt, item.siblings))
+      .then((decision) => {
+        if (decision !== "retry") seenPools.add(item.id);
+      })
+      .catch((error) => console.error("fast pair", error.message))
+      .finally(() => {
+        poolQueued.delete(item.id);
+        poolActive -= 1;
+        drainPools();
+      });
+  }
 }
 
 async function pollLivePairs() {
@@ -192,42 +250,41 @@ async function pollLivePairs() {
     list.push(item.pool);
     v4ByToken.set(token, list);
   }
-  let checked = pending.length;
   for (const item of pending) {
+    if (poolQueued.has(item.id)) continue;
     const token = String(launchedToken(item.pool)?.address || "").toLowerCase();
     const siblings = (v4ByToken.get(token) || []).filter((pool) => String(pool.address || "").toLowerCase() !== item.id);
-    try {
-      const decision = await considerPool(item.pool, item.createdAt, siblings);
-      if (decision !== "retry") seenPools.add(item.id);
-    } catch (error) {
-      console.error("fast pair", error.message);
-    }
+    poolQueued.add(item.id);
+    poolQueue.push({ ...item, siblings });
   }
+  drainPools();
   if (seenPools.size > 5000) {
     for (const id of seenPools) {
       seenPools.delete(id);
       if (seenPools.size <= 2500) break;
     }
   }
-  if (checked) console.error(`fast mode checked ${checked} new pairs`);
 }
 
 export function startFastWatch() {
   if (started) return;
   started = true;
   const loop = async () => {
-    console.log("Fast Mode watches Dextools live pairs when it is turned on");
+    console.log("Fast Mode watches Dextools live pairs every 2 seconds, ahead of other work");
     while (true) {
       if (getSettings().fastMode !== "1") {
         await sleep(1000);
         continue;
       }
+      const startedAt = Date.now();
       try {
         await pollLivePairs();
       } catch (error) {
         console.error("fast mode", error.message);
       }
-      await sleep(6000);
+      const spent = Date.now() - startedAt;
+      if (spent > 2500) console.error(`fast pair list took ${Math.round(spent / 1000)}s`);
+      await sleep(Math.max(200, 2000 - spent));
     }
   };
   loop();

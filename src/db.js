@@ -1246,6 +1246,8 @@ export function savePaid(event) {
   const paidAt = Number(event.paidAt) || 0;
   const amount = event.amount == null ? null : Number(event.amount);
   const silent = paidAt > 0 && paidAt < Number(event.baseline);
+  const stale = paidAt > 0 && nowSec() - paidAt > 180;
+  const hold = silent || stale;
   const existing = db
     .prepare("SELECT paid_at, detail, amount, alerted FROM token_paid WHERE fingerprint = ?")
     .get(event.fingerprint);
@@ -1264,24 +1266,29 @@ export function savePaid(event) {
         amount,
         paidAt || null,
         event.detail,
-        silent ? 1 : 0,
+        hold ? 1 : 0,
         nowSec(),
       );
-    return Number(result.changes) > 0 && !silent;
+    return Number(result.changes) > 0 && !hold;
   }
   const same =
     Number(existing.paid_at) === paidAt &&
     existing.detail === event.detail &&
     Number(existing.amount || 0) === Number(amount || 0);
-  if (same) return false;
+  if (same) {
+    if (hold && !existing.alerted) {
+      db.prepare("UPDATE token_paid SET alerted = 1 WHERE fingerprint = ?").run(event.fingerprint);
+    }
+    return false;
+  }
   db.prepare("UPDATE token_paid SET amount = ?, paid_at = ?, detail = ?, alerted = ? WHERE fingerprint = ?").run(
     amount,
     paidAt || null,
     event.detail,
-    silent ? existing.alerted : 0,
+    hold ? 1 : 0,
     event.fingerprint,
   );
-  return !silent;
+  return !hold;
 }
 
 export function listUnalertedPaid() {

@@ -16,6 +16,10 @@ import { formatKst, formatSwapAmount, nowSec, sleep } from "./util.js";
 
 const CLOCK_SKEW_SEC = 120;
 
+function within(work, ms) {
+  return Promise.race([work, sleep(ms).then(() => null)]);
+}
+
 export async function notifyLaunch(launch) {
   try {
     const settings = getSettings();
@@ -24,7 +28,7 @@ export async function notifyLaunch(launch) {
     const launchedAt = Number(launch.launchedAt) || 0;
     if (settings.fastMode === "1" && !launch.fast) return;
     if (!since || launchedAt + CLOCK_SKEW_SEC < since) return;
-    const market = launch.market || (await lookupLaunchMarket(launch.address));
+    const market = launch.market || (await within(lookupLaunchMarket(launch.address).catch(() => null), 700));
     const links = tokenLinks(launch.address, launch.deployer, market);
     const when = launchedAt || market?.pairCreatedAt || 0;
     const detectedAt = Number(launch.detectedAt) || nowSec();
@@ -42,20 +46,27 @@ export async function notifyLaunch(launch) {
       address: launch.address,
       links,
     });
-    const photoBuffer = await cardImage({
-      symbol: launch.symbol,
-      name: launch.name,
-      bannerUrl: market?.imageUrl || "",
-      logoUrl: market?.logoUrl || logoUrl(launch.address),
-      marketCap: market?.marketCap,
-      liquidityUsd: market?.liquidityUsd,
-      volume24h: market?.volume24h,
-      priceChange24h: market?.priceChange24h,
-      ageLabel: ageLabel(when),
-      createdLabel: eventStamp(when),
-      rank: market?.rank,
+    const photoBuffer = await within(
+      cardImage({
+        symbol: launch.symbol,
+        name: launch.name,
+        bannerUrl: market?.imageUrl || "",
+        logoUrl: market?.logoUrl || logoUrl(launch.address),
+        marketCap: market?.marketCap,
+        liquidityUsd: market?.liquidityUsd,
+        volume24h: market?.volume24h,
+        priceChange24h: market?.priceChange24h,
+        ageLabel: ageLabel(when),
+        createdLabel: eventStamp(when),
+        rank: market?.rank,
+      }).catch(() => null),
+      1200,
+    );
+    await sendTelegram(text, {
+      photo: photoBuffer ? market?.imageUrl || "" : "",
+      photoBuffer,
+      buttons: linkButtons(links),
     });
-    await sendTelegram(text, { photo: market?.imageUrl || "", photoBuffer, buttons: linkButtons(links) });
   } catch (error) {
     console.error("telegram", error.message);
   }
@@ -71,7 +82,7 @@ export async function notifyPaid(payment) {
   let dexscreenerUrl = payment.dexscreener_url || "";
   let looked = null;
   if (!pairAddress) {
-    looked = await lookupLaunchMarket(payment.token_address);
+    looked = await within(lookupLaunchMarket(payment.token_address).catch(() => null), 700);
     pairAddress = looked?.pairAddress || "";
     dextoolsUrl = looked?.dextoolsUrl || dextoolsUrl;
     dexscreenerUrl = looked?.dexscreenerUrl || dexscreenerUrl;
@@ -109,20 +120,24 @@ export async function notifyPaid(payment) {
     address: payment.token_address,
     links,
   });
-  const photoBuffer = await cardImage({
-    symbol: payment.symbol,
-    name: payment.name,
-    bannerUrl: looked?.imageUrl || payment.banner_url || "",
-    logoUrl: logoUrl(payment.token_address),
-    marketCap: looked?.marketCap ?? payment.market_cap,
-    liquidityUsd: looked?.liquidityUsd ?? payment.liquidity_usd,
-    volume24h: looked?.volume24h ?? payment.volume_24h,
-    priceChange24h: looked?.priceChange24h ?? payment.price_change_24h,
-    ageLabel: ageLabel(when),
-    createdLabel: eventStamp(when),
-    rank: payment.rank,
-  });
-  await sendTelegram(text, { photo: looked?.imageUrl || payment.banner_url || "", photoBuffer, buttons: linkButtons(links) });
+  const photoBuffer = await within(
+    cardImage({
+      symbol: payment.symbol,
+      name: payment.name,
+      bannerUrl: looked?.imageUrl || payment.banner_url || "",
+      logoUrl: logoUrl(payment.token_address),
+      marketCap: looked?.marketCap ?? payment.market_cap,
+      liquidityUsd: looked?.liquidityUsd ?? payment.liquidity_usd,
+      volume24h: looked?.volume24h ?? payment.volume_24h,
+      priceChange24h: looked?.priceChange24h ?? payment.price_change_24h,
+      ageLabel: ageLabel(when),
+      createdLabel: eventStamp(when),
+      rank: payment.rank,
+    }).catch(() => null),
+    1200,
+  );
+  const photo = photoBuffer ? looked?.imageUrl || payment.banner_url || "" : "";
+  await sendTelegram(text, { photo, photoBuffer, buttons: linkButtons(links) });
   return true;
 }
 

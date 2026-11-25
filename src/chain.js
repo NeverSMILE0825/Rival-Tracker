@@ -12,12 +12,17 @@ const explorerLane = new AsyncLocalStorage();
 const explorerLanes = {
   history: { chain: Promise.resolve(), next: 0 },
   live: { chain: Promise.resolve(), next: 0 },
+  detect: { chain: Promise.resolve(), next: 0 },
 };
 let rpcCursor = 0;
 let keyCursor = 0;
 
 export function inLiveLane(fn) {
   return explorerLane.run("live", fn);
+}
+
+export function inDetectLane(fn) {
+  return explorerLane.run("detect", fn);
 }
 
 function etherscanKeys() {
