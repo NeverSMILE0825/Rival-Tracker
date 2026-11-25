@@ -1,4 +1,5 @@
 import {
+  buyerTokenPosition,
   getSettings,
   listBuyerChats,
   listCompetitors,
@@ -12,7 +13,7 @@ import {
 } from "./db.js";
 import { lookupLaunchMarket } from "./market.js";
 import { renderAlertCard } from "./card.js";
-import { formatKst, formatSwapAmount, nowSec, sleep } from "./util.js";
+import { formatEth, formatKst, formatSwapAmount, nowSec, sleep } from "./util.js";
 
 const CLOCK_SKEW_SEC = 120;
 
@@ -221,6 +222,9 @@ async function sendBuyerTrades(trades) {
   if (!token || !chatIds.length || !trades?.length) return;
   const zone = buyerZone(settings);
   for (const trade of trades) {
+    if (trade.buyerId && trade.tokenAddress) {
+      trade.position = buyerTokenPosition(trade.buyerId, trade.tokenAddress, trade.txHash);
+    }
     const { text, buttons } = buyerMessage(trade, zone);
     await deliverBuyerMessage(token, chatIds, text, buttons);
   }
@@ -244,6 +248,7 @@ export async function sendBuyerTest(override = {}) {
       amountUsd: 7.45,
       timestamp: when,
       tokenCreatedAt: when - 54 * 60,
+      position: { buys: 12, sells: 5, netWei: "277100000000000000" },
       sample: true,
     },
     zone,
@@ -273,6 +278,27 @@ function buyerZone(settings) {
   return Number.isFinite(offset) ? offset : 9;
 }
 
+function signedEth(wei) {
+  let value = 0n;
+  try {
+    value = BigInt(wei || 0);
+  } catch {
+    return "0";
+  }
+  const sign = value < 0n ? "-" : "";
+  return `${sign}${formatEth(value < 0n ? -value : value)}`;
+}
+
+function positionLine(position) {
+  if (!position) return "";
+  const buys = Number(position.buys) || 0;
+  const sells = Number(position.sells) || 0;
+  if (!buys && !sells) return "";
+  const buyLabel = `${buys} ${buys === 1 ? "buy" : "buys"}`;
+  const sellLabel = `${sells} ${sells === 1 ? "sell" : "sells"}`;
+  return `📊 ${esc(signedEth(position.netWei))} ETH (${esc(buyLabel)} + ${esc(sellLabel)})`;
+}
+
 function buyerMessage(trade, zone) {
   const side = trade.side === "sell" ? "SELL" : "BUY";
   const symbol = trade.tokenSymbol || "TOKEN";
@@ -290,6 +316,7 @@ function buyerMessage(trade, zone) {
     trade.sample ? "ℹ️ <b>SAMPLE ALERT</b>" : "",
     `${side === "BUY" ? "🟢" : "🔴"} <b>${side}</b> · $${bold(symbol)}${name ? ` — ${esc(name)}` : ""}`,
     `💰 MCap ${money(trade.marketCap)} · 📦 ${esc(trade.amountLabel || formatSwapAmount(trade.amountWei, trade.amountUsd))}`,
+    positionLine(trade.position),
     when ? `🕐 ${esc(formatKst(when, zone))} ${zoneLabel}` : "",
     created ? `🆕 Created ${esc(formatKst(created, zone))} ${zoneLabel}` : "",
     created && when ? `⏱ ${side === "SELL" ? "Sell" : "Buy"} ${afterCreation(when - created)}` : "",

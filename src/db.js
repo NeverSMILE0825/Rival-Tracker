@@ -440,6 +440,49 @@ export function listBuyerTradesByBuyer(buyerId) {
   return db.prepare(`${BUYER_TRADE_SELECT} WHERE t.buyer_id = ? ORDER BY t.timestamp ASC, t.id ASC`).all(buyerId);
 }
 
+function tradeWei(row) {
+  const raw = String(row.amount_wei || "").trim();
+  if (raw) {
+    try {
+      const wei = BigInt(raw);
+      return wei < 0n ? -wei : wei;
+    } catch {
+      /* use the decimal amount below */
+    }
+  }
+  const amount = Number(row.amount);
+  if (!Number.isFinite(amount) || amount <= 0) return 0n;
+  return BigInt(Math.round(amount * 1e18));
+}
+
+export function buyerTokenPosition(buyerId, tokenAddress, txHash = "") {
+  const token = String(tokenAddress || "").toLowerCase();
+  const through = String(txHash || "").toLowerCase();
+  const rows = db
+    .prepare(
+      `SELECT id, tx_hash, side, amount, amount_wei
+       FROM buyer_trades
+       WHERE buyer_id = ? AND lower(token_address) = ?
+       ORDER BY timestamp ASC, id ASC`,
+    )
+    .all(buyerId, token);
+  let buys = 0;
+  let sells = 0;
+  let net = 0n;
+  for (const row of rows) {
+    const wei = tradeWei(row);
+    if (row.side === "sell") {
+      sells += 1;
+      net -= wei;
+    } else {
+      buys += 1;
+      net += wei;
+    }
+    if (through && String(row.tx_hash || "").toLowerCase() === through) break;
+  }
+  return { buys, sells, netWei: net.toString() };
+}
+
 export function listCompetitors() {
   return db.prepare("SELECT * FROM competitors ORDER BY id").all();
 }
