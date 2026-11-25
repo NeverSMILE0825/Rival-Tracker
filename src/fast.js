@@ -184,6 +184,11 @@ async function considerPool(pool, createdAt, siblings = []) {
   if (hasEvent("launch", address)) return "skip";
   const stored = getToken(address);
   const detectedAt = nowSec();
+  const eventAt = Number(stored?.created_at) || launchedAt;
+  if (eventAt && detectedAt - eventAt > 15 * 60) {
+    console.error("fast launch already old", token.symbol, address, `${detectedAt - eventAt}s`);
+    return "skip";
+  }
   addEvent({
     kind: "launch",
     competitorId: related.competitorId,
@@ -327,6 +332,7 @@ function noteDirectFunding(tx, rival, blockNumber, timestamp) {
 
 function publishChainLaunch({ address, meta, watcher, timestamp, blockNumber, hash }) {
   if (hasEvent("launch", address)) return;
+  if (timestamp && nowSec() - timestamp > 15 * 60) return;
   if (!tokenExists(address)) {
     upsertToken({
       address,

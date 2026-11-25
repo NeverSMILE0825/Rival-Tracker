@@ -28,10 +28,11 @@ export async function notifyLaunch(launch) {
     const launchedAt = Number(launch.launchedAt) || 0;
     if (settings.fastMode === "1" && !launch.fast) return;
     if (!since || launchedAt + CLOCK_SKEW_SEC < since) return;
+    const detectedAt = Number(launch.detectedAt) || nowSec();
+    if (launchedAt && detectedAt - launchedAt > 15 * 60) return;
     const market = launch.market || (await within(lookupLaunchMarket(launch.address).catch(() => null), 700));
     const links = tokenLinks(launch.address, launch.deployer, market);
     const when = launchedAt || market?.pairCreatedAt || 0;
-    const detectedAt = Number(launch.detectedAt) || nowSec();
     const text = caption({
       emoji: "🚀",
       title: "NEW LAUNCH",
