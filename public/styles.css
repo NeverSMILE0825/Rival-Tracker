@@ -429,9 +429,10 @@ tr.clickable:hover td { background: rgba(255,255,255,0.03); }
 .trade-filters { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: flex-end; padding: 4px 16px 10px; flex: none; }
 .trade-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .trade-field > span { color: var(--muted); font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; font-weight: 700; }
-.trade-field input { width: 120px; background: #0c1016; border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; }
+.trade-field input, .trade-field select { width: 120px; background: #0c1016; border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; }
+.trade-field select { width: 180px; }
 .trade-address input { width: 240px; }
-.trade-field input:focus { border-color: rgba(214, 242, 92, 0.55); outline: none; }
+.trade-field input:focus, .trade-field select:focus { border-color: rgba(214, 242, 92, 0.55); outline: none; }
 .trade-field .chips { flex-wrap: nowrap; }
 .trade-note { flex: 1 0 100%; margin: 0; }
 .chart-key { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; }

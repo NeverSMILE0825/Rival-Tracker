@@ -1966,8 +1966,21 @@ function tradeFilterBar(rows, { axis = false } = {}) {
         <button type="button" class="chip ${axisMode === "amount" ? "on" : ""}" data-act="chart-axis" data-axis="amount">Amount</button>
       </div></div>`
     : "";
+  const selected = filter.address.trim().toLowerCase();
+  const buyers = state.data?.buyers || [];
+  const buyerOptions = [`<option value="">Any buyer</option>`]
+    .concat(
+      buyers.map((buyer) => {
+        const address = buyer.address || "";
+        const name = buyer.label || shortAddr(address);
+        const on = selected && selected === address.toLowerCase() ? " selected" : "";
+        return `<option value="${esc(address)}"${on}>${esc(name)}</option>`;
+      }),
+    )
+    .join("");
   const note = filterRangeError() || `${matched.toLocaleString()} of ${(rows || []).length.toLocaleString()} trades`;
   return `<div class="trade-filters">
+    <label class="trade-field"><span>Buyer</span><select data-act="trade-buyer">${buyerOptions}</select></label>
     <label class="trade-field trade-address"><span>Address</span><input data-act="trade-address" placeholder="Maker address" spellcheck="false" value="${esc(filter.address)}" /></label>
     <div class="trade-field"><span>Side</span><div class="chips">${side("all", "All")}${side("buy", "Only buy")}${side("sell", "Only sell")}</div></div>
     <label class="trade-field"><span>Min amount</span><input data-act="trade-min" inputmode="decimal" placeholder="ETH" value="${esc(filter.minEth)}" /></label>
@@ -2146,14 +2159,8 @@ function watchBuyerProgress(address, apply) {
   };
 }
 
-function paintRealBuyers() {
-  let root = document.getElementById("real-buyers");
-  const ledger = state.realBuyers;
-  if (!ledger) {
-    root?.remove();
-    return;
-  }
-  const signature = JSON.stringify({
+function realBuyerSignature(ledger) {
+  return JSON.stringify({
     address: ledger.address,
     loading: ledger.loading,
     error: ledger.error || "",
@@ -2168,6 +2175,77 @@ function paintRealBuyers() {
     page: state.pages.realBuyers,
     size: state.realPageSize,
   });
+}
+
+function buyerChartSignature(chart) {
+  return JSON.stringify({
+    address: chart.address,
+    loading: chart.loading,
+    error: chart.error || "",
+    ready: chart.ready,
+    rows: chart.rows || [],
+    candles: chart.candles || [],
+    progress: chart.progress || 0,
+    progressLabel: chart.progressLabel || "",
+    view: chart.view || null,
+    filter: state.tradeFilter,
+    axis: chartAxis(),
+  });
+}
+
+function syncTradeResults() {
+  const error = filterRangeError();
+  document.querySelectorAll("#real-buyers .trade-note, #buyer-chart .trade-note").forEach((note) => {
+    const rows = note.closest("#buyer-chart") ? state.buyerChart?.rows || [] : state.realBuyers?.rows || [];
+    const matched = error ? 0 : filteredTrades(rows).length;
+    note.textContent = error || `${matched.toLocaleString()} of ${rows.length.toLocaleString()} trades`;
+  });
+  const results = document.getElementById("real-buyer-results");
+  const ledger = state.realBuyers;
+  if (results && ledger && !ledger.loading && !ledger.error) {
+    const source = ledger.rows || [];
+    const matched = error ? [] : filteredTrades(source);
+    const emptyText = error || (source.length ? "No trades match these filters." : "No real buyer trades yet.");
+    const waiting = !ledger.ready && !source.length;
+    results.innerHTML = waiting ? "" : `${realProfitBar(matched, realLaunch(ledger))}${realBuyerTable(matched, emptyText)}`;
+  }
+  const stage = document.querySelector("#buyer-chart .chart-stage");
+  const chart = state.buyerChart;
+  if (stage && chart && !chart.loading && !chart.error) {
+    const matched = error ? [] : filteredTrades(chart.rows || []);
+    const svg = buyerChartSvg(matched, chart.view || null, chart.candles || []);
+    const existing = stage.querySelector(".buyer-chart");
+    if (existing) existing.outerHTML = svg;
+    else stage.insertAdjacentHTML("afterbegin", svg);
+  }
+  const address = state.tradeFilter.address;
+  document.querySelectorAll("[data-act='trade-address']").forEach((input) => {
+    if (input === document.activeElement || input.value === address) return;
+    input.value = address;
+  });
+  const selected = address.trim().toLowerCase();
+  document.querySelectorAll("[data-act='trade-buyer']").forEach((select) => {
+    if (select === document.activeElement) return;
+    const match = [...select.options].find((option) => option.value && option.value.toLowerCase() === selected);
+    select.value = match ? match.value : "";
+  });
+  document.querySelectorAll("#real-buyers .trade-filters [data-act='trade-side'], #buyer-chart .trade-filters [data-act='trade-side']").forEach((button) => {
+    button.classList.toggle("on", button.dataset.side === state.tradeFilter.side);
+  });
+  const realRoot = document.getElementById("real-buyers");
+  if (realRoot && ledger) realRoot.dataset.sig = realBuyerSignature(ledger);
+  const chartRoot = document.getElementById("buyer-chart");
+  if (chartRoot && chart) chartRoot.dataset.sig = buyerChartSignature(chart);
+}
+
+function paintRealBuyers() {
+  let root = document.getElementById("real-buyers");
+  const ledger = state.realBuyers;
+  if (!ledger) {
+    root?.remove();
+    return;
+  }
+  const signature = realBuyerSignature(ledger);
   if (!root) {
     root = document.createElement("div");
     root.id = "real-buyers";
@@ -2197,7 +2275,7 @@ function paintRealBuyers() {
   const table = ledger.loading || ledger.error || waiting ? "" : realBuyerTable(matched, emptyText);
   const windows = ledger.loading || ledger.error || waiting ? "" : realProfitBar(matched, realLaunch(ledger));
   const filters = ledger.loading || ledger.error || waiting ? "" : tradeFilterBar(source);
-  const body = ledger.loading ? fetchProgress(ledger.progress, ledger.progressLabel) : `${note}${filters}${windows}${table}`;
+  const body = ledger.loading ? fetchProgress(ledger.progress, ledger.progressLabel) : `${note}${filters}<div id="real-buyer-results">${windows}${table}</div>`;
   root.innerHTML = `<div class="buyers-back"><section class="buyers-modal" role="dialog" aria-modal="true" aria-label="Real buyers">
     <div class="buyers-head">
       <div><h3>Real buyers · ${esc(title)}</h3><p class="muted">Every buy and sell that is not a team transaction. Filters apply to the table and the profit windows.</p></div>
@@ -2606,9 +2684,10 @@ function onChartWheel(event) {
 
 function onChartPointerDown(event) {
   if (event.button !== 0 || chartDrag) return;
+  if (event.target.closest?.("input, textarea, select, button, a, .trade-filters, .chart-legend, .buyers-head")) return;
   const chartRoot = event.target.closest?.("#buyer-chart");
   const svg = chartRoot?.querySelector(".buyer-chart");
-  if (!svg || event.target.closest?.(".chart-tip, a, button") || !state.buyerChart?.rows?.length) return;
+  if (!svg || !event.target.closest?.(".chart-stage, .buyer-chart") || !state.buyerChart?.rows?.length) return;
   const extent = chartExtent(filteredTrades(state.buyerChart.rows), state.buyerChart.candles || []);
   if (!extent) return;
   const point = svgPoint(event, svg);
@@ -2670,19 +2749,7 @@ function paintBuyerChart() {
     root?.remove();
     return;
   }
-  const signature = JSON.stringify({
-    address: chart.address,
-    loading: chart.loading,
-    error: chart.error || "",
-    ready: chart.ready,
-    rows: chart.rows || [],
-    candles: chart.candles || [],
-    progress: chart.progress || 0,
-    progressLabel: chart.progressLabel || "",
-    view: chart.view || null,
-    filter: state.tradeFilter,
-    axis: chartAxis(),
-  });
+  const signature = buyerChartSignature(chart);
   if (!root) {
     root = document.createElement("div");
     root.id = "buyer-chart";
@@ -3031,6 +3098,12 @@ function onInput(event) {
     paintRealBuyers();
     return;
   }
+  if (event.target.dataset.act === "trade-buyer") {
+    state.tradeFilter.address = event.target.value.trim();
+    resetTradeView();
+    syncTradeResults();
+    return;
+  }
   if (event.target.dataset.act === "trade-address" || event.target.dataset.act === "trade-min" || event.target.dataset.act === "trade-max") {
     const act = event.target.dataset.act;
     const key = act === "trade-address" ? "address" : act === "trade-min" ? "minEth" : "maxEth";
@@ -3039,8 +3112,7 @@ function onInput(event) {
     state.tradeFilter[key] = value;
     if (value !== event.target.value) event.target.value = value;
     resetTradeView();
-    paintRealBuyers();
-    paintBuyerChart();
+    syncTradeResults();
     return;
   }
   if (event.target.dataset.act === "page-size") {
@@ -3214,13 +3286,12 @@ async function onClick(event) {
   if (!button) return;
   const act = button.dataset.act;
   if (act === "real-from" || act === "real-to" || act === "real-from-unit" || act === "real-to-unit") return;
-  if (act === "trade-address" || act === "trade-min" || act === "trade-max") return;
+  if (act === "trade-address" || act === "trade-min" || act === "trade-max" || act === "trade-buyer") return;
   if (act === "trade-side") {
     const side = button.dataset.side;
     state.tradeFilter.side = side === "buy" || side === "sell" ? side : "all";
     resetTradeView();
-    paintRealBuyers();
-    paintBuyerChart();
+    syncTradeResults();
     return;
   }
   if (act === "chart-axis") {
