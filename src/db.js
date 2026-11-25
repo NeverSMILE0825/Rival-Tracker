@@ -388,7 +388,7 @@ export function deleteBuyer(id) {
 }
 
 export function listTrackedTokens() {
-  return db.prepare("SELECT address, symbol, name, decimals, market_cap FROM tokens").all();
+  return db.prepare("SELECT address, symbol, name, decimals, market_cap, created_at FROM tokens").all();
 }
 
 export function saveBuyerTrades(rows) {

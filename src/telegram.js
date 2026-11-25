@@ -242,12 +242,29 @@ export async function sendBuyerTest(override = {}) {
       amountWei: "4358370533764617",
       amountUsd: 7.45,
       timestamp: when,
+      tokenCreatedAt: when - 54 * 60,
       sample: true,
     },
     zone,
   );
   const { sent, lastError } = await deliverBuyerMessage(token, chatIds, text, buttons);
   if (!sent) throw lastError || new Error("Could not reach Telegram.");
+}
+
+function afterCreation(delta) {
+  const seconds = Math.floor(Number(delta) || 0);
+  if (seconds < -30) return "before creation";
+  const value = Math.max(0, seconds);
+  if (value < 60) return `${value}s after creation`;
+  const minutes = Math.floor(value / 60);
+  const remain = value % 60;
+  if (minutes < 60) return remain ? `${minutes}m ${remain}s after creation` : `${minutes}m after creation`;
+  const hours = Math.floor(minutes / 60);
+  const mins = minutes % 60;
+  if (hours < 48) return mins ? `${hours}h ${mins}m after creation` : `${hours}h after creation`;
+  const days = Math.floor(hours / 24);
+  const hrs = hours % 24;
+  return hrs ? `${days}d ${hrs}h after creation` : `${days}d after creation`;
 }
 
 function buyerZone(settings) {
@@ -261,6 +278,7 @@ function buyerMessage(trade, zone) {
   const name = String(trade.tokenName || "").trim();
   const who = trade.buyerLabel || trade.buyerAddress || "Buyer";
   const when = Number(trade.timestamp) || 0;
+  const created = Number(trade.tokenCreatedAt) || 0;
   const zoneLabel = `UTC${zone >= 0 ? "+" : ""}${zone}`;
   const lag = lagLabel(when, nowSec());
   const tx = String(trade.txHash || "").toLowerCase();
@@ -272,6 +290,8 @@ function buyerMessage(trade, zone) {
     `${side === "BUY" ? "🟢" : "🔴"} <b>${side}</b> · $${bold(symbol)}${name ? ` — ${esc(name)}` : ""}`,
     `💰 MCap ${money(trade.marketCap)} · 📦 ${esc(trade.amountLabel || formatSwapAmount(trade.amountWei, trade.amountUsd))}`,
     when ? `🕐 ${esc(formatKst(when, zone))} ${zoneLabel}` : "",
+    created ? `🆕 Created ${esc(formatKst(created, zone))} ${zoneLabel}` : "",
+    created && when ? `⏱ ${side === "SELL" ? "Sell" : "Buy"} ${afterCreation(when - created)}` : "",
     lag ? `⚡️ Detected in ${esc(lag)}` : "",
     `👤 ${esc(who)}`,
     trade.buyerAddress ? `<code>${esc(trade.buyerAddress)}</code>` : "",

@@ -202,6 +202,7 @@ export function tradesFromTrace(trace, { hash, blockNumber, buyers, tokens, ethU
       buyerAddress: row.buyer.address,
       tokenSymbol: token.symbol || "",
       tokenName: token.name || "",
+      tokenCreatedAt: Number(token.created_at) || 0,
     });
   }
   return trades;
