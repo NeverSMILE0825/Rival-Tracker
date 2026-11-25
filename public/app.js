@@ -2370,17 +2370,70 @@ function animalMark(animal, height) {
 function chartTipHtml(row) {
   const animal = buyerAnimal(row.amountUsd);
   const type = row.type === "sell" ? "Sell" : "Buy";
-  return `<div class="chart-tip-title" style="color:${animal.color}">${animalMark(animal, 16)}<span>${esc(animal.label)}</span></div>
+  const tx = String(row.tx || "");
+  return `<div class="chart-tip-title" style="color:${animal.color}">${animalMark(animal, 16)}<span>${esc(animal.label)}</span><span class="pill ${row.type === "buy" ? "live" : "rugged"}">${type}</span></div>
     <dl>
       <dt>No</dt><dd>${esc(row.no)}</dd>
       <dt>Time</dt><dd>${esc(formatExact(row.time))}</dd>
-      <dt>Type</dt><dd><span class="pill ${row.type === "buy" ? "live" : "rugged"}">${type}</span></dd>
       <dt>M. Cap</dt><dd>${esc(row.mcap == null ? "—" : exactUsd(row.mcap))}</dd>
       <dt>Amount</dt><dd>${esc(row.amountWei ? `${formatEth(row.amountWei)} ETH` : "—")}</dd>
       <dt>Count</dt><dd>${esc(row.count == null ? "—" : row.count)}</dd>
       <dt>Maker</dt><dd class="addr">${esc(row.maker || "—")}</dd>
-      <dt>Tx</dt><dd><a href="https://etherscan.io/tx/${esc(row.tx)}" target="_blank" rel="noreferrer">Etherscan</a></dd>
+      <dt>Tx</dt><dd class="addr">${tx ? `<a href="https://etherscan.io/tx/${esc(tx)}" target="_blank" rel="noreferrer">${esc(shortHash(tx))}</a>` : "—"}</dd>
     </dl>`;
+}
+
+function shortHash(value) {
+  const text = String(value || "");
+  if (text.length <= 18) return text;
+  return `${text.slice(0, 10)}…${text.slice(-8)}`;
+}
+
+let chartTipTimer = 0;
+
+function chartTipEl() {
+  let tip = document.getElementById("chart-tip");
+  if (!tip) {
+    tip = document.createElement("div");
+    tip.id = "chart-tip";
+    tip.className = "chart-tip";
+    tip.hidden = true;
+    document.body.appendChild(tip);
+  }
+  return tip;
+}
+
+function hideChartTip() {
+  clearTimeout(chartTipTimer);
+  const tip = document.getElementById("chart-tip");
+  if (tip) tip.hidden = true;
+}
+
+function hideChartTipSoon() {
+  clearTimeout(chartTipTimer);
+  chartTipTimer = setTimeout(() => {
+    const tip = document.getElementById("chart-tip");
+    if (tip && !tip.matches(":hover")) tip.hidden = true;
+  }, 280);
+}
+
+function showChartTip(html, anchor) {
+  clearTimeout(chartTipTimer);
+  const tip = chartTipEl();
+  tip.innerHTML = html;
+  tip.hidden = false;
+  const box = anchor.getBoundingClientRect();
+  const tipBox = tip.getBoundingClientRect();
+  const gap = 14;
+  let left = box.right + gap;
+  if (left + tipBox.width > window.innerWidth - 10) left = box.left - tipBox.width - gap;
+  if (left < 10) left = 10;
+  const above = box.top - gap - tipBox.height;
+  const beside = box.top + box.height / 2 - tipBox.height / 2;
+  let top = beside;
+  if (beside < 10 || beside + tipBox.height > window.innerHeight - 16) top = above >= 10 ? above : Math.max(10, window.innerHeight - tipBox.height - 10);
+  tip.style.left = `${left}px`;
+  tip.style.top = `${top}px`;
 }
 
 const CHART = { width: 1000, height: 520, pad: { l: 78, r: 46, t: 16, b: 46 } };
@@ -2642,8 +2695,7 @@ function scheduleChartPaint() {
   if (chartPaintFrame) return;
   chartPaintFrame = requestAnimationFrame(() => {
     chartPaintFrame = 0;
-    const tip = document.querySelector("#buyer-chart .chart-tip");
-    if (tip) tip.hidden = true;
+    hideChartTip();
     const root = document.getElementById("buyer-chart");
     if (root) root.dataset.sig = "";
     paintBuyerChart();
@@ -2865,9 +2917,8 @@ function formatEthNumber(value) {
   const number = Number(value);
   if (!Number.isFinite(number)) return "—";
   const abs = Math.abs(number);
-  const digits = abs >= 100 ? 2 : abs >= 1 ? 3 : 4;
-  const text = number.toLocaleString("en-US", { maximumFractionDigits: digits });
-  return text;
+  const digits = abs >= 100 ? 2 : abs >= 1 ? 3 : abs >= 0.01 ? 4 : abs >= 0.0001 ? 6 : 8;
+  return number.toLocaleString("en-US", { maximumFractionDigits: digits });
 }
 
 function walletChartSvg(rows, view) {
@@ -2910,9 +2961,12 @@ function walletChartSvg(rows, view) {
     .map((item) => {
       const buy = item.trade.side !== "sell";
       const color = buy ? "#3dd68c" : "#ff5d73";
+      const cx = xOf(Number(item.trade.timestamp));
+      const cy = yOf(item.y);
       return `<g class="chart-point wallet-point" data-id="${esc(item.trade.id)}">
-        <circle cx="${xOf(Number(item.trade.timestamp))}" cy="${yOf(item.y)}" r="8" fill="${color}" opacity="0.18"/>
-        <circle cx="${xOf(Number(item.trade.timestamp))}" cy="${yOf(item.y)}" r="4.5" fill="${color}" stroke="#0c1016" stroke-width="1.4"/>
+        <circle cx="${cx}" cy="${cy}" r="16" fill="transparent"/>
+        <circle cx="${cx}" cy="${cy}" r="8" fill="${color}" opacity="0.18" pointer-events="none"/>
+        <circle cx="${cx}" cy="${cy}" r="4.5" fill="${color}" stroke="#0c1016" stroke-width="1.4" pointer-events="none"/>
       </g>`;
     })
     .join("");
@@ -2932,15 +2986,19 @@ function walletChartSvg(rows, view) {
 function walletTipHtml(trade) {
   const side = trade.side === "sell" ? "Sell" : "Buy";
   const token = trade.token_symbol || shortAddr(trade.token_address);
-  const name = trade.token_name || "";
-  return `<div class="chart-tip-title"><span class="pill ${trade.side === "buy" ? "live" : "rugged"}">${side}</span><b>${esc(token)}</b></div>
+  const name = trade.token_name && trade.token_name !== token ? trade.token_name : "";
+  const usd = Number(trade.amount_usd);
+  const amount = `${formatEthNumber(walletEth(trade))} ETH${Number.isFinite(usd) && usd > 0 ? ` · ${exactUsd(usd)}` : ""}`;
+  const tx = String(trade.tx_hash || "");
+  return `<div class="chart-tip-kicker">Tx info</div>
+    <div class="chart-tip-title"><span class="pill ${trade.side === "buy" ? "live" : "rugged"}">${side}</span><b>${esc(token)}</b></div>
+    ${name ? `<p class="chart-tip-name">${esc(name)}</p>` : ""}
     <dl>
-      <dt>Name</dt><dd>${esc(name || "—")}</dd>
-      <dt>Contract</dt><dd class="addr">${esc(trade.token_address || "—")}</dd>
       <dt>Time</dt><dd>${esc(formatExact(trade.timestamp))}</dd>
-      <dt>Amount</dt><dd>${esc(formatEthNumber(walletEth(trade)))} ETH</dd>
+      <dt>Amount</dt><dd>${esc(amount)}</dd>
       <dt>M. Cap</dt><dd>${esc(trade.market_cap ? exactUsd(trade.market_cap) : "—")}</dd>
-      <dt>Tx</dt><dd><a href="https://etherscan.io/tx/${esc(trade.tx_hash)}" target="_blank" rel="noreferrer">Etherscan</a></dd>
+      <dt>Contract</dt><dd class="addr">${esc(trade.token_address || "—")}</dd>
+      <dt>Tx</dt><dd class="addr">${tx ? `<a href="https://etherscan.io/tx/${esc(tx)}" target="_blank" rel="noreferrer">${esc(shortHash(tx))}</a>` : "—"}</dd>
     </dl>`;
 }
 
@@ -3067,6 +3125,7 @@ function paintWalletChart() {
   const chart = state.walletChart;
   if (!chart) {
     root?.remove();
+    if (!state.buyerChart) hideChartTip();
     return;
   }
   const signature = walletSignature();
@@ -3093,7 +3152,7 @@ function paintWalletChart() {
     ? `<p class="muted buyers-note">Loading this wallet's trades.</p>`
     : chart.error
       ? `<p class="muted buyers-note">${esc(chart.error)}</p>`
-      : `${walletFilterBar(rows.length)}<div class="wallet-stats">${walletStatsHtml(matched)}</div><div class="chart-legend">${walletLegend()}</div><div class="chart-stage">${walletChartSvg(matched, chart.view || null)}<div class="chart-tip" hidden></div></div>`;
+      : `${walletFilterBar(rows.length)}<div class="wallet-stats">${walletStatsHtml(matched)}</div><div class="chart-legend">${walletLegend()}</div><div class="chart-stage">${walletChartSvg(matched, chart.view || null)}</div>`;
   root.innerHTML = `<div class="chart-back wallet-back"><section class="buyers-modal chart-modal wallet-modal" role="dialog" aria-modal="true" aria-label="Buyer chart">
     <div class="buyers-head">
       <div><h3>Buyer chart · ${esc(name)}</h3><p class="muted">${esc(address)} · ${blurb}</p></div>
@@ -3115,8 +3174,7 @@ function scheduleWalletPaint() {
   if (walletPaintFrame) return;
   walletPaintFrame = requestAnimationFrame(() => {
     walletPaintFrame = 0;
-    const tip = document.querySelector("#wallet-chart .chart-tip");
-    if (tip) tip.hidden = true;
+    hideChartTip();
     syncWalletChart();
     if (walletDrag?.moved) document.querySelector("#wallet-chart .wallet-plot")?.classList.add("is-panning");
   });
@@ -3218,31 +3276,18 @@ function onWalletPointerUp(event) {
 }
 
 function onWalletHover(event) {
-  const tip = document.querySelector("#wallet-chart .chart-tip");
-  if (!tip || walletDrag?.moved) {
-    if (tip) tip.hidden = true;
+  if (walletDrag?.moved) {
+    hideChartTip();
     return;
   }
   const point = event.target.closest?.(".wallet-point");
   if (!point) {
-    if (!event.target.closest?.(".chart-tip")) tip.hidden = true;
+    hideChartTipSoon();
     return;
   }
   const trade = (state.walletChart?.trades || []).find((item) => String(item.id) === String(point.dataset.id));
   if (!trade) return;
-  tip.hidden = false;
-  tip.innerHTML = walletTipHtml(trade);
-  const stage = document.querySelector("#wallet-chart .chart-stage");
-  if (!stage) return;
-  const box = point.getBoundingClientRect();
-  const host = stage.getBoundingClientRect();
-  const tipBox = tip.getBoundingClientRect();
-  let left = box.right - host.left + 10;
-  let top = box.top - host.top - 6;
-  if (left + tipBox.width > host.width - 8) left = box.left - host.left - tipBox.width - 10;
-  if (top + tipBox.height > host.height - 8) top = Math.max(8, host.height - tipBox.height - 8);
-  tip.style.left = `${Math.max(8, left)}px`;
-  tip.style.top = `${Math.max(8, top)}px`;
+  showChartTip(walletTipHtml(trade), point);
 }
 
 async function loadWalletChart(id) {
@@ -3263,6 +3308,7 @@ function paintBuyerChart() {
   const chart = state.buyerChart;
   if (!chart) {
     root?.remove();
+    if (!state.walletChart) hideChartTip();
     return;
   }
   const signature = buyerChartSignature(chart);
@@ -3293,7 +3339,7 @@ function paintBuyerChart() {
   const filters = chart.loading || chart.error ? "" : tradeFilterBar(rows, { axis: true });
   const body = chart.loading
     ? fetchProgress(chart.progress, chart.progressLabel)
-    : `${note}<div class="chart-stage">${plot}<div class="chart-tip" hidden></div></div>`;
+    : `${note}<div class="chart-stage">${plot}</div>`;
   const blurb = amount
     ? "Each icon sits at that trade's ETH amount. A green circle is a buy and a red circle is a sell. Drag the chart to move it. Scroll up to zoom in and down to zoom out."
     : "The line is the token market cap. Each icon is a real buyer trade: a green circle is a buy and a red circle is a sell. Drag the chart to move it. Scroll up to zoom in and down to zoom out.";
@@ -3367,32 +3413,24 @@ async function loadBuyerChart(address) {
 }
 
 function onChartHover(event) {
+  if (event.target.closest?.("#chart-tip")) {
+    clearTimeout(chartTipTimer);
+    return;
+  }
   if (event.target.closest?.("#wallet-chart")) return onWalletHover(event);
-  const tip = document.querySelector("#buyer-chart .chart-tip");
-  if (!tip || !state.buyerChart?.rows || chartDrag?.moved) {
-    if (tip && chartDrag?.moved) tip.hidden = true;
+  if (!state.buyerChart?.rows || chartDrag?.moved || !event.target.closest?.("#buyer-chart")) {
+    if (chartDrag?.moved) hideChartTip();
+    else if (!event.target.closest?.("#wallet-chart")) hideChartTipSoon();
     return;
   }
   const point = event.target.closest?.(".chart-point");
   if (!point) {
-    if (!event.target.closest?.(".chart-tip")) tip.hidden = true;
+    hideChartTipSoon();
     return;
   }
   const row = filteredTrades(state.buyerChart.rows)[Number(point.dataset.index)];
   if (!row) return;
-  tip.hidden = false;
-  tip.innerHTML = chartTipHtml(row);
-  const stage = document.querySelector("#buyer-chart .chart-stage");
-  if (!stage) return;
-  const box = point.getBoundingClientRect();
-  const host = stage.getBoundingClientRect();
-  const tipBox = tip.getBoundingClientRect();
-  let left = box.right - host.left + 10;
-  let top = box.top - host.top - 6;
-  if (left + tipBox.width > host.width - 8) left = box.left - host.left - tipBox.width - 10;
-  if (top + tipBox.height > host.height - 8) top = Math.max(8, host.height - tipBox.height - 8);
-  tip.style.left = `${Math.max(8, left)}px`;
-  tip.style.top = `${Math.max(8, top)}px`;
+  showChartTip(chartTipHtml(row), point);
 }
 
 function paintDrawer() {
