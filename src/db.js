@@ -176,6 +176,7 @@ const DEFAULTS = {
   telegramUpdateOffset: "0",
   paidBaseline: "",
   liveSeenBlock: "",
+  launchSeenBlock: "",
   fastMode: "1",
   fastSince: "",
   buyerSeenBlock: "",
@@ -723,6 +724,19 @@ export function recordFunding({ competitorId, deployer, funder, txHash, blockNum
     db.prepare("UPDATE deployers SET status = 'queued', last_checked_at = NULL, note = '' WHERE address = ?").run(deployer);
   }
   return { created: false };
+}
+
+export function listLaunchWatchers() {
+  return db
+    .prepare(
+      `SELECT d.address, c.label, c.id AS competitor_id
+       FROM deployers d
+       JOIN fundings f ON f.deployer = d.address
+       JOIN competitors c ON c.id = f.competitor_id AND c.enabled = 1
+       WHERE d.status IN ('waiting', 'queued', 'launched')
+       GROUP BY d.address`,
+    )
+    .all();
 }
 
 export function listRivalCreators() {

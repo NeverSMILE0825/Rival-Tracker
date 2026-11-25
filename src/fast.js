@@ -1,11 +1,11 @@
 import https from "node:https";
-import { inDetectLane, transactionLaunch } from "./chain.js";
-import { addEvent, getSettings, getToken, hasEvent, saveSettings, setTokenLaunch, tokenExists, upsertToken } from "./db.js";
+import { codeAt, inDetectLane, liveGetBlock, liveHeadBlock, liveReceipts, mintedTokens, readTokenMeta, transactionLaunch } from "./chain.js";
+import { addEvent, getSettings, getToken, hasEvent, listCompetitors, listLaunchWatchers, recordFunding, saveSettings, setTokenLaunch, tokenExists, upsertToken } from "./db.js";
 import { lookupLaunch } from "./launch.js";
 import { relateToken } from "./relate.js";
 import { watchNarrative } from "./narrative.js";
 import { notifyLaunch } from "./telegram.js";
-import { nowSec, sleep } from "./util.js";
+import { ethToWei, nowSec, sleep } from "./util.js";
 import { watchPaid } from "./paid.js";
 import { fetchAlikePools, pickMainV4, quoteScore } from "./v4pools.js";
 
@@ -20,6 +20,13 @@ const poolQueue = [];
 const poolQueued = new Set();
 let poolActive = 0;
 let started = false;
+const launchWatchers = new Map();
+const freshFunded = new Map();
+const seenLaunchTx = new Set();
+let launchCursor = 0;
+let launchWatchersAt = 0;
+let launchTipLog = 0;
+let launchTipStarted = false;
 
 function fetchDextools(url, timeout = 4000) {
   return new Promise((resolve, reject) => {
@@ -266,9 +273,217 @@ async function pollLivePairs() {
   }
 }
 
+function refreshLaunchWatchers() {
+  if (launchWatchers.size > 1 && Date.now() - launchWatchersAt < 20000) return;
+  const next = new Map();
+  for (const rival of listCompetitors()) {
+    if (Number(rival.enabled) === 0) continue;
+    const address = String(rival.address || "").toLowerCase();
+    if (!/^0x[a-f0-9]{40}$/.test(address)) continue;
+    next.set(address, { rival: rival.label, competitorId: rival.id, deployer: address, kind: "rival" });
+  }
+  for (const row of listLaunchWatchers()) {
+    const address = String(row.address || "").toLowerCase();
+    if (!/^0x[a-f0-9]{40}$/.test(address) || next.has(address)) continue;
+    next.set(address, { rival: row.label, competitorId: row.competitor_id, deployer: address, kind: "deployer" });
+  }
+  for (const [address, row] of freshFunded) {
+    if (!next.has(address)) next.set(address, row);
+  }
+  launchWatchers.clear();
+  for (const [address, row] of next) launchWatchers.set(address, row);
+  launchWatchersAt = Date.now();
+}
+
+function noteDirectFunding(tx, rival, blockNumber, timestamp) {
+  const to = String(tx.to || "").toLowerCase();
+  if (!/^0x[a-f0-9]{40}$/.test(to) || launchWatchers.get(to)?.kind === "rival") return;
+  let value = 0n;
+  try {
+    value = BigInt(tx.value || "0x0");
+  } catch {
+    return;
+  }
+  const settings = getSettings();
+  if (value < ethToWei(settings.minFundingEth || "0.01") || value > ethToWei(settings.maxFundingEth || "20")) return;
+  const row = { rival: rival.rival, competitorId: rival.competitorId, deployer: to, kind: "deployer" };
+  launchWatchers.set(to, row);
+  freshFunded.set(to, row);
+  if (freshFunded.size > 2000) {
+    const oldest = freshFunded.keys().next().value;
+    freshFunded.delete(oldest);
+  }
+  recordFunding({
+    competitorId: rival.competitorId,
+    deployer: to,
+    funder: rival.deployer,
+    txHash: String(tx.hash || "").toLowerCase(),
+    blockNumber,
+    timestamp,
+    valueWei: value.toString(),
+    kind: "direct",
+  });
+}
+
+function publishChainLaunch({ address, meta, watcher, timestamp, blockNumber, hash }) {
+  if (hasEvent("launch", address)) return;
+  if (!tokenExists(address)) {
+    upsertToken({
+      address,
+      deployer: watcher.deployer,
+      name: meta.name,
+      symbol: meta.symbol,
+      decimals: meta.decimals,
+      createdAt: timestamp,
+      createdTx: hash,
+      createdBlock: blockNumber,
+    });
+    void watchNarrative({ name: meta.name, symbol: meta.symbol, createdAt: timestamp });
+  } else {
+    const stored = getToken(address);
+    if (!stored?.created_block || Math.abs((Number(stored.created_at) || 0) - timestamp) > 30) {
+      setTokenLaunch(address, { createdAt: timestamp, createdBlock: blockNumber, createdTx: hash, confirmed: false });
+    }
+  }
+  if (hasEvent("launch", address)) return;
+  addEvent({
+    kind: "launch",
+    competitorId: watcher.competitorId,
+    address,
+    message: `${meta.symbol} launched · ${watcher.rival}`,
+  });
+  watchPaid(address);
+  void notifyLaunch({
+    fast: true,
+    symbol: meta.symbol,
+    name: meta.name,
+    address,
+    deployer: watcher.deployer,
+    rival: watcher.rival,
+    launchedAt: timestamp,
+    detectedAt: nowSec(),
+  });
+  void confirmLaunch(address);
+  console.error("launch tip", meta.symbol, address, `block ${blockNumber}`);
+}
+
+function looksLikeDeploy(tx) {
+  if (!tx.to) return true;
+  const input = String(tx.input || "0x").toLowerCase();
+  return input !== "0x" && input !== "0x0";
+}
+
+async function inspectLaunchBatch(jobs) {
+  const pending = [];
+  for (const job of jobs) {
+    const hash = String(job.tx.hash || "").toLowerCase();
+    if (!hash || seenLaunchTx.has(hash) || !looksLikeDeploy(job.tx)) continue;
+    seenLaunchTx.add(hash);
+    pending.push({ ...job, hash });
+  }
+  if (seenLaunchTx.size > 8000) {
+    for (const item of seenLaunchTx) {
+      seenLaunchTx.delete(item);
+      if (seenLaunchTx.size <= 4000) break;
+    }
+  }
+  for (let index = 0; index < pending.length; index += 25) {
+    const slice = pending.slice(index, index + 25);
+    let receipts = new Map();
+    try {
+      receipts = await liveReceipts(slice.map((job) => job.hash));
+    } catch (error) {
+      await sleep(400);
+      try {
+        receipts = await liveReceipts(slice.map((job) => job.hash));
+      } catch (retryError) {
+        console.error("launch receipts", retryError.message || error.message);
+        continue;
+      }
+    }
+    for (const job of slice) {
+      const receipt = receipts.get(job.hash);
+      if (!receipt || (receipt.status && BigInt(receipt.status) === 0n)) continue;
+      const candidates = new Set(mintedTokens(receipt));
+      if (receipt.contractAddress) candidates.add(String(receipt.contractAddress).toLowerCase());
+      for (const address of candidates) {
+        if (!/^0x[a-f0-9]{40}$/.test(address) || QUOTES.has(address) || hasEvent("launch", address)) continue;
+        let prior = "0x";
+        try {
+          prior = await codeAt(address, job.blockNumber - 1);
+        } catch (error) {
+          console.error("launch code", error.message);
+          continue;
+        }
+        if (prior && prior !== "0x") continue;
+        const meta = await readTokenMeta(address);
+        if (!meta) continue;
+        publishChainLaunch({ address, meta, watcher: job.watcher, timestamp: job.timestamp, blockNumber: job.blockNumber, hash: job.hash });
+      }
+    }
+  }
+}
+
+async function pollLaunchBlocks() {
+  refreshLaunchWatchers();
+  const head = await liveHeadBlock();
+  if (!head) return;
+  if (!launchCursor) {
+    const saved = Number(getSettings().launchSeenBlock) || 0;
+    launchCursor = saved > 0 && saved < head && head - saved <= 30 ? saved : Math.max(0, head - 1);
+  }
+  if (head - launchCursor > 30) launchCursor = head - 2;
+  const end = Math.min(head, launchCursor + 3);
+  for (let blockNumber = launchCursor + 1; blockNumber <= end; blockNumber += 1) {
+    const block = await liveGetBlock(blockNumber);
+    if (!block?.transactions) return;
+    const timestamp = Number(BigInt(block.timestamp || "0x0"));
+    for (const tx of block.transactions) {
+      const from = String(tx.from || "").toLowerCase();
+      const watcher = launchWatchers.get(from);
+      if (watcher?.kind === "rival") noteDirectFunding(tx, watcher, blockNumber, timestamp);
+    }
+    const jobs = [];
+    for (const tx of block.transactions) {
+      const from = String(tx.from || "").toLowerCase();
+      const watcher = launchWatchers.get(from);
+      if (watcher) jobs.push({ tx, watcher, blockNumber, timestamp });
+    }
+    if (jobs.length) void inspectLaunchBatch(jobs).catch((error) => console.error("launch tip", error.message));
+    launchCursor = blockNumber;
+    saveSettings({ launchSeenBlock: String(blockNumber) });
+  }
+  if (Date.now() - launchTipLog > 20000) {
+    launchTipLog = Date.now();
+    console.error(`launch tip at block ${launchCursor.toLocaleString()} watching ${launchWatchers.size.toLocaleString()} wallets`);
+  }
+}
+
+function startLaunchTip() {
+  if (launchTipStarted) return;
+  launchTipStarted = true;
+  console.log("Launch detection reads each new block directly, ahead of Dextools");
+  const loop = async () => {
+    while (true) {
+      if (getSettings().fastMode !== "1") {
+        await sleep(1000);
+        continue;
+      }
+      try {
+        await pollLaunchBlocks();
+      } catch (error) {
+        console.error("launch tip", error.message);
+      }
+      await sleep(1200);
+    }
+  };
+  loop();
+}
+
 export function startFastWatch() {
   if (started) return;
   started = true;
+  startLaunchTip();
   const loop = async () => {
     console.log("Fast Mode watches Dextools live pairs every 2 seconds, ahead of other work");
     while (true) {

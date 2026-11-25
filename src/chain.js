@@ -273,6 +273,49 @@ export async function liveGetBlock(number) {
   return liveRpc("eth_getBlockByNumber", [`0x${block.toString(16)}`, true]);
 }
 
+export async function codeAt(address, blockNumber) {
+  const block = Number.isFinite(Number(blockNumber)) ? `0x${Number(blockNumber).toString(16)}` : "latest";
+  const code = await liveRpc("eth_getCode", [address, block]);
+  return String(code || "0x");
+}
+
+export async function liveReceipts(hashes) {
+  const list = hashes.filter(Boolean);
+  if (!list.length) return new Map();
+  const body = list.map((hash, index) => ({
+    jsonrpc: "2.0",
+    id: index,
+    method: "eth_getTransactionReceipt",
+    params: [hash],
+  }));
+  let lastError;
+  for (const url of RPCS) {
+    try {
+      const payload = await fetchJson(
+        url,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        },
+        4000,
+      );
+      const rows = Array.isArray(payload) ? payload : [payload];
+      const receipts = new Map();
+      for (const item of rows) {
+        if (!item?.result) continue;
+        const hash = list[Number(item.id)];
+        if (hash) receipts.set(hash, item.result);
+      }
+      if (!receipts.size && list.length) throw new Error("Receipt batch was empty");
+      return receipts;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError || new Error("Receipt batch failed");
+}
+
 async function nonceBatch(list) {
   const body = list.map((address, index) => ({
     jsonrpc: "2.0",
