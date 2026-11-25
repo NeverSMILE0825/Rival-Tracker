@@ -69,6 +69,102 @@ function eventUsd(event) {
   return null;
 }
 
+const READ_RPCS = ["https://ethereum.publicnode.com", "https://eth.drpc.org"];
+
+async function rpcBatch(method, paramsList) {
+  if (!paramsList.length) return new Map();
+  const body = paramsList.map((params, index) => ({ jsonrpc: "2.0", id: index, method, params }));
+  let lastError = new Error("RPC batch failed");
+  for (const url of READ_RPCS) {
+    try {
+      const response = await fetch(url, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(15000),
+      });
+      const payload = await response.json();
+      const rows = Array.isArray(payload) ? payload : [payload];
+      const results = new Map();
+      for (const item of rows) {
+        if (!item || item.result == null || item.error) continue;
+        results.set(Number(item.id), item.result);
+      }
+      if (results.size) return results;
+      lastError = new Error("RPC batch was empty");
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError;
+}
+
+async function fillMissingTrades(rows, chart, events, supply) {
+  const blocks = [...new Set(rows.filter((row) => !row.time && row.block > 0).map((row) => row.block))];
+  for (let index = 0; index < blocks.length; index += 20) {
+    const slice = blocks.slice(index, index + 20);
+    try {
+      const results = await rpcBatch("eth_getBlockByNumber", slice.map((block) => [`0x${block.toString(16)}`, false]));
+      results.forEach((block, id) => {
+        const time = Number(BigInt(block?.timestamp || "0x0"));
+        const number = slice[id];
+        if (!time || !number) return;
+        for (const row of rows) if (row.block === number && !row.time) row.time = time;
+      });
+    } catch (error) {
+      console.error("real buyers blocks", error.message);
+    }
+  }
+  const missingMakers = rows.filter((row) => !row.maker && /^0x[a-f0-9]{64}$/.test(row.tx));
+  for (let index = 0; index < missingMakers.length; index += 20) {
+    const slice = missingMakers.slice(index, index + 20);
+    try {
+      const results = await rpcBatch("eth_getTransactionByHash", slice.map((row) => [row.tx]));
+      results.forEach((tx, id) => {
+        const maker = String(tx?.from || "").toLowerCase();
+        if (/^0x[a-f0-9]{40}$/.test(maker)) slice[id].maker = maker;
+      });
+    } catch (error) {
+      console.error("real buyers makers", error.message);
+    }
+  }
+  const counts = new Map();
+  for (const row of rows) {
+    if (!row.maker) continue;
+    counts.set(row.maker, (counts.get(row.maker) || 0) + 1);
+  }
+  const prices = [];
+  for (const event of events || []) {
+    const time = Number(event?.timestamp) || 0;
+    const price = Number(event?.price) || Number(event?.previousData?.price) || 0;
+    if (time > 0 && price > 0) prices.push({ time, price });
+  }
+  prices.sort((a, b) => a.time - b.time);
+  const candles = [...(chart || [])].filter((point) => point.time > 0 && point.mcap > 0).sort((a, b) => a.time - b.time);
+  for (const row of rows) {
+    if (row.count == null && row.maker) row.count = counts.get(row.maker) || 1;
+    if (row.mcap != null || !row.time) continue;
+    let price = 0;
+    let gap = Infinity;
+    for (const point of prices) {
+      const distance = Math.abs(point.time - row.time);
+      if (distance < gap) {
+        price = point.price;
+        gap = distance;
+      } else if (point.time > row.time) break;
+    }
+    if (supply > 0 && price > 0 && gap <= 6 * 3600) {
+      row.mcap = price * supply;
+      continue;
+    }
+    let chosen = null;
+    for (const point of candles) {
+      if (Math.abs(point.time - row.time) <= 15 * 60) chosen = point;
+    }
+    if (chosen) row.mcap = chosen.mcap;
+  }
+}
+
 async function ethUsd() {
   if (ethQuote.usd > 0 && Date.now() - ethQuote.at < 60_000) return ethQuote.usd;
   try {
@@ -188,15 +284,16 @@ async function mapLimited(items, limit, worker) {
   return results;
 }
 
-async function pairEvents(pair, onPage, needed, oldestBlock) {
+async function pairEvents(pair, onPage, needed) {
   const events = [];
   const seen = new Set();
   let cursor = null;
   let fetched = 0;
+  let emptyPages = 0;
   for (let page = 0; page < 300; page += 1) {
     if (needed?.size === 0) {
       onPage?.(fetched, true);
-      break;
+      return { events, complete: true };
     }
     const parts = ["limit=100"];
     if (cursor) {
@@ -215,14 +312,11 @@ async function pairEvents(pair, onPage, needed, oldestBlock) {
     } catch (error) {
       console.error("real buyers", pair, error.message);
       onPage?.(fetched, true);
-      return { events, complete: Boolean(error?.permanent) && fetched === 0 };
+      return { events, complete: false };
     }
     const data = body?.data || {};
     let added = 0;
-    let oldestOnPage = Infinity;
     for (const event of data.events || []) {
-      const block = Number(event.blockNumber || event.block) || 0;
-      if (block > 0) oldestOnPage = Math.min(oldestOnPage, block);
       const id = String(event.id || "").toLowerCase();
       if (!/^0x[a-f0-9]{64}$/.test(id) || seen.has(id)) continue;
       seen.add(id);
@@ -233,13 +327,15 @@ async function pairEvents(pair, onPage, needed, oldestBlock) {
     fetched += 1;
     const next = data.next;
     const repeated = cursor && next && next.blockNumber === cursor.blockNumber && next.logIndex === cursor.logIndex;
-    const olderThanSwaps = Boolean(oldestBlock) && oldestOnPage < oldestBlock;
-    const more = Boolean(next) && added > 0 && !repeated && needed?.size !== 0 && !olderThanSwaps;
+    if (added === 0) emptyPages += 1;
+    else emptyPages = 0;
+    const more = Boolean(next) && !repeated && emptyPages < 2 && needed?.size !== 0;
     onPage?.(fetched, !more);
-    if (!more) break;
+    if (!more) return { events, complete: !next || needed?.size === 0 };
     cursor = next;
   }
-  return { events, complete: true };
+  onPage?.(fetched, true);
+  return { events, complete: needed?.size === 0 };
 }
 
 const buyerProgress = new Map();
@@ -274,8 +370,6 @@ async function loadRealBuyerTrades(token, saved) {
   const ready = Boolean(saved.profit_checked_at);
   const pairs = listBuyerPairs(token);
   const needed = new Set(swaps.map((swap) => String(swap.tx_hash || "").toLowerCase()).filter((hash) => /^0x[a-f0-9]{64}$/.test(hash)));
-  const blocks = swaps.map((swap) => Number(swap.block_number) || 0).filter((block) => block > 0);
-  const oldestBlock = blocks.length ? Math.min(...blocks) : 0;
   const tracker = {
     parts: pairs.map((pair) => ({ done: 0, total: Math.max(1, Math.ceil(pair.txns / 100)) })),
     extraDone: 0,
@@ -318,7 +412,6 @@ async function loadRealBuyerTrades(token, saved) {
         pair.address,
         (used, finished, label) => advancePair(token, tracker, index, used, finished, label || "Fetching pool trades"),
         needed,
-        oldestBlock,
       ).catch((error) => {
         console.error("real buyers", pair.address, error.message);
         advancePair(token, tracker, index, tracker.parts[index].total, true, "Fetching pool trades");
@@ -373,6 +466,9 @@ async function loadRealBuyerTrades(token, saved) {
         if (row.amountUsd == null && row.amountWei) row.amountUsd = (Number(row.amountWei) / 1e18) * price;
       }
     }
+  }
+  if (rows.some((row) => !row.time || !row.maker || row.mcap == null || row.count == null)) {
+    await fillMissingTrades(rows, chart, [...byTx.values()], supply);
   }
   const value = { ready: ready && complete && rows.length > 0, complete, symbol: saved.symbol || "", name: saved.name || "", rows, chart };
   cache.set(token, { at: Date.now(), ready: value.ready, complete, value });

@@ -90,6 +90,23 @@ function formatEth(wei) {
   return frac ? `${whole}.${frac}` : String(whole);
 }
 
+function formatTradeEth(wei) {
+  if (wei == null || wei === "") return "—";
+  let value;
+  try {
+    value = BigInt(wei);
+  } catch {
+    return "—";
+  }
+  if (value === 0n) return "0 ETH";
+  const abs = value < 0n ? -value : value;
+  const whole = abs / 10n ** 18n;
+  const digits = whole >= 1n ? 4 : abs < 10n ** 14n ? 8 : 6;
+  const frac = (abs % 10n ** 18n).toString().padStart(18, "0").slice(0, digits).replace(/0+$/, "");
+  const text = frac ? `${whole}.${frac}` : String(whole);
+  return `${value < 0n ? "-" : ""}${text} ETH`;
+}
+
 function zoneOffset() {
   const offset = Number(state.data?.settings?.timezoneOffset ?? 9);
   return Number.isInteger(offset) && offset >= -12 && offset <= 14 ? offset : 9;
@@ -2119,7 +2136,7 @@ function realBuyerTable(rows, emptyText = "No real buyer trades yet.") {
         <td>${esc(formatExact(row.time))}</td>
         <td><span class="pill ${row.type === "buy" ? "live" : "rugged"}">${row.type === "buy" ? "Buy" : "Sell"}</span></td>
         <td class="num">${esc(row.mcap == null ? "—" : exactUsd(row.mcap))}</td>
-        <td class="num">${esc(row.amountWei ? `${formatEth(row.amountWei)} ETH` : "—")}</td>
+        <td class="num">${esc(row.amountWei ? formatTradeEth(row.amountWei) : "—")}</td>
         <td class="num">${esc(row.count == null ? "—" : row.count)}</td>
         <td class="maker-cell">${maker}</td>
         <td class="links"><a class="link-pill" href="https://etherscan.io/tx/${esc(row.tx)}" target="_blank" rel="noreferrer">Etherscan</a></td>

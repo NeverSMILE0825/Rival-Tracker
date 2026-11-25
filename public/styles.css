@@ -436,8 +436,9 @@ tr.clickable:hover td { background: rgba(255,255,255,0.03); }
 .fetch-progress-track { height: 8px; border-radius: 99px; background: rgba(255,255,255,0.08); overflow: hidden; }
 .fetch-progress-track span { display: block; height: 100%; width: 0; border-radius: inherit; background: linear-gradient(90deg, #8ea2ff, var(--green)); transition: width 0.28s ease; }
 .buyers-modal .table-panel { flex: 1; min-height: 0; display: flex; flex-direction: column; border: 0; border-radius: 0; background: transparent; }
-.buyers-modal .table-scroll { flex: 1; min-height: 0; max-height: none; }
+.buyers-modal .table-scroll { flex: 1; min-height: 0; max-height: none; overflow: auto; }
 .buyers-modal .pager { flex: none; border-top: 1px solid var(--line); }
+#real-buyer-results { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
 .maker-cell { font-family: Consolas, "Cascadia Mono", monospace; font-size: 12px; }
 .maker-cell a { color: inherit; text-decoration: none; }
 .maker-cell a:hover { color: white; }
