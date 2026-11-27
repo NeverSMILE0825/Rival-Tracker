@@ -1,6 +1,7 @@
 import {
   buyerTokenPosition,
   getSettings,
+  mainTokenPair,
   listBuyerChats,
   listCompetitors,
   listFundingsForDeployer,
@@ -224,6 +225,7 @@ async function sendBuyerTrades(trades) {
   for (const trade of trades) {
     if (trade.buyerId && trade.tokenAddress) {
       trade.position = buyerTokenPosition(trade.buyerId, trade.tokenAddress, trade.txHash);
+      trade.pairAddress = mainTokenPair(trade.tokenAddress);
     }
     const { text, buttons } = buyerMessage(trade, zone);
     await deliverBuyerMessage(token, chatIds, text, buttons);
@@ -312,9 +314,14 @@ function buyerMessage(trade, zone) {
   const token = String(trade.tokenAddress || "").toLowerCase();
   const txUrl = /^0x[a-f0-9]{64}$/.test(tx) ? `https://etherscan.io/tx/${tx}` : "";
   const chartUrl = isAddress(token) ? `https://dexscreener.com/ethereum/${token}` : "";
+  const gmgnUrl = isAddress(token) ? `https://gmgn.ai/eth/token/${token}` : "";
+  const pair = String(trade.pairAddress || "").toLowerCase();
+  const dextoolsUrl = isPoolId(pair) && pair !== token ? `https://www.dextools.io/app/ether/pair-explorer/${pair}` : "";
   const lines = [
     trade.sample ? "ℹ️ <b>SAMPLE ALERT</b>" : "",
     `${side === "BUY" ? "🟢" : "🔴"} <b>${side}</b> · $${bold(symbol)}${name ? ` — ${esc(name)}` : ""}`,
+    isAddress(token) ? `📋 CA <code>${esc(token)}</code>` : "",
+    buyerChartLine(dextoolsUrl, gmgnUrl),
     `💰 MCap ${money(trade.marketCap)} · 📦 ${esc(trade.amountLabel || formatSwapAmount(trade.amountWei, trade.amountUsd))}`,
     positionLine(trade.position),
     when ? `🕐 ${esc(formatKst(when, zone))} ${zoneLabel}` : "",
@@ -324,15 +331,27 @@ function buyerMessage(trade, zone) {
     `👤 ${esc(who)}`,
     trade.buyerAddress ? `<code>${esc(trade.buyerAddress)}</code>` : "",
   ].filter(Boolean);
-  const buttons = [
+  const tradeRow = [
     txUrl ? { text: "🔗 Transaction", url: txUrl } : null,
     chartUrl ? { text: "📈 DexScreener", url: chartUrl } : null,
     trade.sample ? { text: "🔗 Transaction", url: "https://etherscan.io" } : null,
   ].filter(Boolean);
+  const chartRow = [
+    dextoolsUrl ? { text: "🧰 Dextools", url: dextoolsUrl } : null,
+    gmgnUrl ? { text: "🟢 GMGN", url: gmgnUrl } : null,
+  ].filter(Boolean);
   return {
     text: lines.join("\n"),
-    buttons: { inline_keyboard: buttons.length ? [buttons] : [] },
+    buttons: { inline_keyboard: [tradeRow, chartRow].filter((row) => row.length) },
   };
+}
+
+function buyerChartLine(dextoolsUrl, gmgnUrl) {
+  const parts = [
+    dextoolsUrl ? `<a href="${esc(dextoolsUrl)}">Dextools</a>` : "",
+    gmgnUrl ? `<a href="${esc(gmgnUrl)}">GMGN</a>` : "",
+  ].filter(Boolean);
+  return parts.length ? `🔗 ${parts.join(" · ")}` : "";
 }
 
 async function deliverBuyerMessage(token, chatIds, text, buttons) {
